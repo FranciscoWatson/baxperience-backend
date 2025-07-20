@@ -1,0 +1,50 @@
+@startuml
+!includeurl https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Container.puml
+LAYOUT_WITH_LEGEND()
+
+' Usuario
+Person(mobileUser, "Usuario", "Turista que utiliza la app móvil BAXperience")
+
+System_Boundary(baxperience, "BAXperience Platform") {
+
+  ' Frontend + Gateway
+  Container(appMobile, "App Móvil", "React Native", "Permite a los usuarios consultar puntos de interés, rutas, y recomendaciones.")
+  Container(apiGateway, "API Gateway", "Node.js", "Orquesta las llamadas hacia los microservicios y maneja autenticación/autorización.")
+
+  ' Agrupar microservicios horizontalmente
+  node "Microservicios" {
+    Container(scraper, "Scraper Service", "Python", "Obtiene información pública desde portales y sitios del GCBA.")
+    Container(datasetProcessor, "Dataset Processor", "Python + Pandas", "Procesa, limpia, normaliza y enriquece los datasets.")
+    Container(gcbaApi, "GCBA API Service", "Python o Node.js", "Consulta APIs públicas del GCBA como transporte, bicis, eventos, etc.")
+  }
+
+  ' Kafka debajo
+  node "Infraestructura de Mensajería" {
+    Container(kafka, "Kafka", "Apache Kafka", "Plataforma de mensajería asíncrona para comunicar microservicios.")
+  }
+
+  ' Bases de datos individuales
+  ContainerDb(scraperDb, "scraper_db", "PostgreSQL", "Base de datos del scraper.")
+  ContainerDb(processorDb, "processor_db", "PostgreSQL", "Base de datos del dataset processor.")
+  ContainerDb(gcbaDb, "gcba_db", "PostgreSQL", "Base de datos del GCBA API service.")
+}
+
+' Relación usuario
+Rel(mobileUser, appMobile, "Usa")
+Rel(appMobile, apiGateway, "Hace llamadas API")
+
+' API Gateway comunica con microservicios
+Rel(apiGateway, datasetProcessor, "Consulta")
+Rel(apiGateway, gcbaApi, "Consulta")
+
+' Kafka: eventos
+Rel(scraper, kafka, "Publica eventos")
+Rel(gcbaApi, kafka, "Publica eventos")
+Rel(kafka, datasetProcessor, "Consume eventos")
+
+' Bases de datos
+Rel(scraper, scraperDb, "Lee/Escribe")
+Rel(datasetProcessor, processorDb, "Lee/Escribe")
+Rel(gcbaApi, gcbaDb, "Lee/Escribe")
+
+@enduml
