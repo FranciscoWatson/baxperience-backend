@@ -14,7 +14,7 @@ System_Boundary(baxperience, "BAXperience Platform") {
   ' Agrupar microservicios horizontalmente
   node "Microservicios" {
     Container(scraper, "Scraper Service", "Python", "Obtiene información pública desde portales y sitios del GCBA.")
-    Container(datasetProcessor, "Dataset Processor", "Python + Pandas", "Procesa, limpia, normaliza y enriquece los datasets.")
+    Container(datasetProcessor, "Data Processor", "Python + Pandas", "Procesa, limpia, normaliza y enriquece los datasets.")
     Container(gcbaApi, "GCBA API Service", "Python o Node.js", "Consulta APIs públicas del GCBA como transporte, bicis, eventos, etc.")
   }
 
@@ -24,8 +24,7 @@ System_Boundary(baxperience, "BAXperience Platform") {
   }
 
   ' Bases de datos individuales
-  ContainerDb(scraperDb, "scraper_db", "PostgreSQL", "Base de datos del scraper.")
-  ContainerDb(processorDb, "processor_db", "PostgreSQL", "Base de datos del dataset processor.")
+  ContainerDb(processorDb, "processor_db", "PostgreSQL", "Base de datos del data processor.")
   ContainerDb(gcbaDb, "gcba_db", "PostgreSQL", "Base de datos del GCBA API service.")
 }
 
@@ -43,7 +42,6 @@ Rel(gcbaApi, kafka, "Publica eventos")
 Rel(kafka, datasetProcessor, "Consume eventos")
 
 ' Bases de datos
-Rel(scraper, scraperDb, "Lee/Escribe")
 Rel(datasetProcessor, processorDb, "Lee/Escribe")
 Rel(gcbaApi, gcbaDb, "Lee/Escribe")
 
