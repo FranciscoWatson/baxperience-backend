@@ -2,8 +2,8 @@
 # =======================================
 
 # Core data processing
-pandas>=1.5.0
-numpy>=1.24.0
+numpy==1.24.3
+pandas==2.0.3
 
 # Database connectivity
 psycopg2-binary>=2.9.5

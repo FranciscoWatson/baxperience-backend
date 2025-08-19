@@ -44,29 +44,29 @@ class ETLProcessor:
             # Conexión a BD Operacional
             self.operational_conn = psycopg2.connect(**DatabaseConfig.OPERATIONAL_DB)
             self.operational_conn.autocommit = False
-            logger.info("✅ Conectado a BD Operacional")
+            logger.info("Conectado a BD Operacional")
             
             # Conexión a BD Data Processor
             self.processor_conn = psycopg2.connect(**DatabaseConfig.PROCESSOR_DB)
             self.processor_conn.autocommit = False
-            logger.info("✅ Conectado a BD Data Processor")
+            logger.info("Conectado a BD Data Processor")
             
         except Exception as e:
-            logger.error(f"❌ Error conectando a bases de datos: {e}")
+            logger.error(f"Error conectando a bases de datos: {e}")
             raise
             
     def disconnect_databases(self):
         """Cerrar conexiones"""
         if self.operational_conn:
             self.operational_conn.close()
-            logger.info("🔌 Desconectado de BD Operacional")
+            logger.info("Desconectado de BD Operacional")
         if self.processor_conn:
             self.processor_conn.close()
-            logger.info("🔌 Desconectado de BD Data Processor")
+            logger.info("Desconectado de BD Data Processor")
             
     def create_processor_schema(self):
         """Crear esquema optimizado en BD Data Processor"""
-        logger.info("🏗️ Creando esquema en BD Data Processor...")
+        logger.info("Creando esquema en BD Data Processor...")
         
         cursor = self.processor_conn.cursor()
         
@@ -182,11 +182,11 @@ class ETLProcessor:
         cursor.execute(schema_sql)
         self.processor_conn.commit()
         cursor.close()
-        logger.info("✅ Esquema de BD Data Processor creado")
+        logger.info("Esquema de BD Data Processor creado")
         
     def extract_transform_load_pois(self) -> int:
         """ETL principal: POIs de BD Operacional → BD Data Processor"""
-        logger.info("🔄 Ejecutando ETL de POIs...")
+        logger.info("Ejecutando ETL de POIs...")
         
         # Extract: Obtener datos de BD Operacional
         op_cursor = self.operational_conn.cursor(cursor_factory=RealDictCursor)
@@ -224,7 +224,7 @@ class ETLProcessor:
         pois_data = op_cursor.fetchall()
         op_cursor.close()
         
-        logger.info(f"📊 Extraídos {len(pois_data)} POIs de BD Operacional")
+        logger.info(f"Extraídos {len(pois_data)} POIs de BD Operacional")
         
         # Transform & Load: Procesar y cargar en BD Data Processor
         proc_cursor = self.processor_conn.cursor()
@@ -281,15 +281,15 @@ class ETLProcessor:
                 count += 1
                 
                 if count % 100 == 0:
-                    logger.info(f"🔄 Procesados {count}/{len(pois_data)} POIs...")
+                    logger.info(f"Procesados {count}/{len(pois_data)} POIs...")
                     
             except Exception as e:
-                logger.error(f"❌ Error procesando POI {poi['id']}: {e}")
+                logger.error(f"Error procesando POI {poi['id']}: {e}")
                 
         self.processor_conn.commit()
         proc_cursor.close()
         
-        logger.info(f"✅ ETL POIs completado: {count} registros cargados")
+        logger.info(f"ETL POIs completado: {count} registros cargados")
         return count
         
     def calculate_popularity_score(self, poi: Dict) -> float:
@@ -325,7 +325,7 @@ class ETLProcessor:
         
     def calculate_barrio_metrics(self) -> int:
         """Calcular métricas agregadas por barrio"""
-        logger.info("📊 Calculando métricas por barrio...")
+        logger.info("Calculando métricas por barrio...")
         
         proc_cursor = self.processor_conn.cursor()
         
@@ -364,12 +364,12 @@ class ETLProcessor:
         self.processor_conn.commit()
         proc_cursor.close()
         
-        logger.info(f"✅ Métricas por barrio calculadas: {rows_affected} barrios")
+        logger.info(f"Métricas por barrio calculadas: {rows_affected} barrios")
         return rows_affected
         
     def extract_transform_load_eventos(self) -> int:
         """ETL de eventos activos"""
-        logger.info("🎭 Ejecutando ETL de eventos...")
+        logger.info("Ejecutando ETL de eventos...")
         
         # Extract eventos activos
         op_cursor = self.operational_conn.cursor(cursor_factory=RealDictCursor)
@@ -391,7 +391,7 @@ class ETLProcessor:
         eventos_data = op_cursor.fetchall()
         op_cursor.close()
         
-        logger.info(f"📊 Extraídos {len(eventos_data)} eventos activos")
+        logger.info(f"Extraídos {len(eventos_data)} eventos activos")
         
         # Transform & Load eventos
         proc_cursor = self.processor_conn.cursor()
@@ -456,17 +456,17 @@ class ETLProcessor:
                 count += 1
                 
             except Exception as e:
-                logger.error(f"❌ Error procesando evento {evento['id']}: {e}")
+                logger.error(f"Error procesando evento {evento['id']}: {e}")
                 
         self.processor_conn.commit()
         proc_cursor.close()
         
-        logger.info(f"✅ ETL Eventos completado: {count} registros cargados")
+        logger.info(f"ETL Eventos completado: {count} registros cargados")
         return count
         
     def run_full_etl(self) -> Dict[str, int]:
         """Ejecutar ETL completo"""
-        logger.info("🚀 Iniciando ETL completo...")
+        logger.info("Iniciando ETL completo...")
         
         results = {}
         
@@ -483,10 +483,10 @@ class ETLProcessor:
             # ETL de eventos
             results['eventos'] = self.extract_transform_load_eventos()
             
-            logger.info("🎉 ETL completado exitosamente!")
+            logger.info("ETL completado exitosamente!")
             
         except Exception as e:
-            logger.error(f"💥 Error en ETL: {e}")
+            logger.error(f"Error en ETL: {e}")
             if self.processor_conn:
                 self.processor_conn.rollback()
             raise
@@ -511,7 +511,7 @@ def main():
         print("="*50)
         
     except Exception as e:
-        logger.error(f"💥 Error ejecutando ETL: {e}")
+        logger.error(f"Error ejecutando ETL: {e}")
         sys.exit(1)
 
 if __name__ == "__main__":

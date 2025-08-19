@@ -40,18 +40,18 @@ class DatabaseConfig:
     OPERATIONAL_DB = {
         'host': os.getenv('OPERATIONAL_DB_HOST', 'localhost'),
         'port': os.getenv('OPERATIONAL_DB_PORT', '5432'),
-        'database': os.getenv('OPERATIONAL_DB_NAME', 'baxperience_operational'),
+        'database': os.getenv('OPERATIONAL_DB_NAME', 'OPERATIONAL_DB'),
         'user': os.getenv('OPERATIONAL_DB_USER', 'postgres'),
-        'password': os.getenv('OPERATIONAL_DB_PASSWORD', 'password')
+        'password': os.getenv('OPERATIONAL_DB_PASSWORD', 'admin')
     }
     
     # BD Data Processor (para clustering)
     PROCESSOR_DB = {
         'host': os.getenv('PROCESSOR_DB_HOST', 'localhost'),
-        'port': os.getenv('PROCESSOR_DB_PORT', '5433'),
-        'database': os.getenv('PROCESSOR_DB_NAME', 'baxperience_processor'),
+        'port': os.getenv('PROCESSOR_DB_PORT', '5432'),
+        'database': os.getenv('PROCESSOR_DB_NAME', 'PROCESSOR_DB'),
         'user': os.getenv('PROCESSOR_DB_USER', 'postgres'),
-        'password': os.getenv('PROCESSOR_DB_PASSWORD', 'password')
+        'password': os.getenv('PROCESSOR_DB_PASSWORD', 'admin')
     }
 
 class CSVProcessor:
@@ -60,7 +60,10 @@ class CSVProcessor:
     def __init__(self):
         self.operational_conn = None
         self.processor_conn = None
-        self.csv_base_path = "../../csv-filtrados/"
+        # Obtener ruta absoluta del directorio actual
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        # Subir dos niveles (services/data-processor-service) y entrar a csv-filtrados
+        self.csv_base_path = os.path.join(current_dir, "csv-filtrados")
         self.categoria_ids = {}
         self.subcategoria_ids = {}
         
@@ -70,29 +73,29 @@ class CSVProcessor:
             # Conexión a BD Operacional
             self.operational_conn = psycopg2.connect(**DatabaseConfig.OPERATIONAL_DB)
             self.operational_conn.autocommit = False
-            logger.info("✅ Conectado a BD Operacional")
+            logger.info("Conectado a BD Operacional")
             
             # Conexión a BD Data Processor (opcional por ahora)
             try:
                 self.processor_conn = psycopg2.connect(**DatabaseConfig.PROCESSOR_DB)
                 self.processor_conn.autocommit = False
-                logger.info("✅ Conectado a BD Data Processor")
+                logger.info("Conectado a BD Data Processor")
             except Exception as e:
-                logger.warning(f"⚠️ No se pudo conectar a BD Data Processor: {e}")
+                logger.warning(f"No se pudo conectar a BD Data Processor: {e}")
                 self.processor_conn = None
                 
         except Exception as e:
-            logger.error(f"❌ Error conectando a bases de datos: {e}")
+            logger.error(f"Error conectando a bases de datos: {e}")
             raise
             
     def disconnect_databases(self):
         """Cerrar conexiones"""
         if self.operational_conn:
             self.operational_conn.close()
-            logger.info("🔌 Desconectado de BD Operacional")
+            logger.info("Desconectado de BD Operacional")
         if self.processor_conn:
             self.processor_conn.close()
-            logger.info("🔌 Desconectado de BD Data Processor")
+            logger.info("Desconectado de BD Data Processor")
             
     def load_categoria_mappings(self):
         """Cargar IDs de categorías y subcategorías para mapeo"""
@@ -110,7 +113,7 @@ class CSVProcessor:
             self.subcategoria_ids[key] = row['id']
             
         cursor.close()
-        logger.info(f"📋 Cargadas {len(self.categoria_ids)} categorías y {len(self.subcategoria_ids)} subcategorías")
+        logger.info(f"Cargadas {len(self.categoria_ids)} categorías y {len(self.subcategoria_ids)} subcategorías")
         
     def get_categoria_id(self, categoria_name: str) -> int:
         """Obtener ID de categoría por nombre"""
@@ -146,6 +149,26 @@ class CSVProcessor:
         if pd.isna(text) or text == '' or str(text).lower() == 'nan':
             return None
         return str(text).strip()
+        
+    def extract_comuna_number(self, comuna_str: str) -> Optional[str]:
+        """Extraer número de comuna del texto"""
+        if pd.isna(comuna_str) or comuna_str == '':
+            return None
+        
+        # Convertir a string y buscar números
+        comuna_text = str(comuna_str).upper()
+        
+        # Si contiene "COMUNA" seguido de número
+        import re
+        match = re.search(r'COMUNA\s*(\d+)', comuna_text)
+        if match:
+            return match.group(1)
+        
+        # Si es solo un número
+        if comuna_text.isdigit():
+            return comuna_text
+            
+        return None
 
     def insert_poi(self, poi_data: Dict) -> int:
         """Insertar POI en base de datos operacional"""
@@ -184,9 +207,12 @@ class CSVProcessor:
 
     def process_museos_csv(self) -> int:
         """Procesar CSV de museos"""
-        logger.info("🏛️ Procesando museos...")
+        logger.info("Procesando museos...")
         
         csv_path = os.path.join(self.csv_base_path, "museos-filtrado.csv")
+        print(f"Intentando leer archivo: {csv_path}")
+        if not os.path.exists(csv_path):
+            raise FileNotFoundError(f"No se encuentra el archivo: {csv_path}")
         df = pd.read_csv(csv_path, encoding='utf-8')
         
         categoria_id = self.get_categoria_id('museos')
@@ -235,7 +261,7 @@ class CSVProcessor:
                     'tipo_ambiente': None,
                     'horario': None,
                     'jurisdiccion': self.clean_text(row.get('jurisdiccion')),
-                    'año_inauguracion': self.clean_text(row.get('año_inauguracion')),
+                    'año_inauguracion': int(float(row.get('año_inauguracion'))) if pd.notna(row.get('año_inauguracion')) else None,
                     'material': None,
                     'autor': None,
                     'denominacion_simboliza': None,
@@ -250,29 +276,32 @@ class CSVProcessor:
                 
                 # Validar datos mínimos requeridos
                 if poi_data['latitud'] is None or poi_data['longitud'] is None:
-                    logger.warning(f"⚠️ Museo sin coordenadas: {nombre}")
+                    logger.warning(f"Museo sin coordenadas: {nombre}")
                     continue
                     
                 poi_id = self.insert_poi(poi_data)
                 count += 1
                 
                 if count % 10 == 0:
-                    logger.info(f"📍 Procesados {count} museos...")
+                    logger.info(f"Procesados {count} museos...")
                     
             except Exception as e:
                 errors += 1
-                logger.error(f"❌ Error procesando museo {row.get('nombre', 'sin nombre')}: {e}")
+                logger.error(f"Error procesando museo {row.get('nombre', 'sin nombre')}: {e}")
                 
         self.operational_conn.commit()
-        logger.info(f"✅ Museos procesados: {count} exitosos, {errors} errores")
+        logger.info(f"Museos procesados: {count} exitosos, {errors} errores")
         return count
 
     def process_gastronomia_csv(self) -> int:
         """Procesar CSV de gastronomía"""
-        logger.info("🍽️ Procesando gastronomía...")
+        logger.info("Procesando gastronomía...")
         
         csv_path = os.path.join(self.csv_base_path, "oferta-gastronomica.csv")
-        df = pd.read_csv(csv_path, encoding='utf-8', sep=';')
+        print(f"Intentando leer archivo: {csv_path}")
+        if not os.path.exists(csv_path):
+            raise FileNotFoundError(f"No se encuentra el archivo: {csv_path}")
+        df = pd.read_csv(csv_path, encoding='latin1', sep=';')
         
         categoria_id = self.get_categoria_id('gastronomía')
         
@@ -344,28 +373,31 @@ class CSVProcessor:
                 
                 # Validar datos mínimos requeridos
                 if poi_data['latitud'] is None or poi_data['longitud'] is None:
-                    logger.warning(f"⚠️ Restaurante sin coordenadas: {nombre}")
+                    logger.warning(f"Restaurante sin coordenadas: {nombre}")
                     continue
                     
                 poi_id = self.insert_poi(poi_data)
                 count += 1
                 
                 if count % 50 == 0:
-                    logger.info(f"📍 Procesados {count} establecimientos gastronómicos...")
+                    logger.info(f"Procesados {count} establecimientos gastronómicos...")
                     
             except Exception as e:
                 errors += 1
-                logger.error(f"❌ Error procesando establecimiento {row.get('nombre', 'sin nombre')}: {e}")
+                logger.error(f"Error procesando establecimiento {row.get('nombre', 'sin nombre')}: {e}")
                 
         self.operational_conn.commit()
-        logger.info(f"✅ Gastronomía procesada: {count} exitosos, {errors} errores")
+        logger.info(f"Gastronomía procesada: {count} exitosos, {errors} errores")
         return count
 
     def process_monumentos_csv(self) -> int:
         """Procesar CSV de monumentos"""
-        logger.info("🗿 Procesando monumentos...")
+        logger.info("Procesando monumentos...")
         
         csv_path = os.path.join(self.csv_base_path, "monumentos-caba.csv")
+        print(f"Intentando leer archivo: {csv_path}")
+        if not os.path.exists(csv_path):
+            raise FileNotFoundError(f"No se encuentra el archivo: {csv_path}")
         df = pd.read_csv(csv_path, encoding='utf-8', sep=';')
         
         categoria_id = self.get_categoria_id('monumentos')
@@ -390,11 +422,11 @@ class CSVProcessor:
                     'direccion': self.clean_text(row.get('DIRECCION_NORMALIZADA')),
                     'direccion_normalizada': self.clean_text(row.get('DIRECCION_NORMALIZADA')),
                     'calle': self.clean_text(row.get('CALLE')),
-                    'altura': self.clean_text(row.get('ALTURA')),
+                    'altura': str(row.get('ALTURA')) if pd.notna(row.get('ALTURA')) else None,
                     'piso': None,
                     'codigo_postal': self.clean_text(row.get('CODIGO_POSTAL_ARGENTINO')),
                     'barrio': self.clean_text(row.get('BARRIO')),
-                    'comuna': self.clean_text(row.get('COMUNA')),
+                    'comuna': self.extract_comuna_number(row.get('COMUNA')),
                     'telefono': None,
                     'codigo_area': None,
                     'email': None,
@@ -418,28 +450,31 @@ class CSVProcessor:
                 
                 # Validar datos mínimos requeridos
                 if poi_data['latitud'] is None or poi_data['longitud'] is None:
-                    logger.warning(f"⚠️ Monumento sin coordenadas: {nombre}")
+                    logger.warning(f"Monumento sin coordenadas: {nombre}")
                     continue
                     
                 poi_id = self.insert_poi(poi_data)
                 count += 1
                 
                 if count % 10 == 0:
-                    logger.info(f"📍 Procesados {count} monumentos...")
+                    logger.info(f"Procesados {count} monumentos...")
                     
             except Exception as e:
                 errors += 1
-                logger.error(f"❌ Error procesando monumento {row.get('DENOMINACION_SIMBOLIZA', 'sin nombre')}: {e}")
+                logger.error(f"Error procesando monumento {row.get('DENOMINACION_SIMBOLIZA', 'sin nombre')}: {e}")
                 
         self.operational_conn.commit()
-        logger.info(f"✅ Monumentos procesados: {count} exitosos, {errors} errores")
+        logger.info(f"Monumentos procesados: {count} exitosos, {errors} errores")
         return count
 
     def process_lugares_historicos_csv(self) -> int:
         """Procesar CSV de lugares históricos"""
-        logger.info("🏛️ Procesando lugares históricos...")
+        logger.info("Procesando lugares históricos...")
         
         csv_path = os.path.join(self.csv_base_path, "monumentos-y-lugares-historicos-filtrado.csv")
+        print(f"Intentando leer archivo: {csv_path}")
+        if not os.path.exists(csv_path):
+            raise FileNotFoundError(f"No se encuentra el archivo: {csv_path}")
         df = pd.read_csv(csv_path, encoding='utf-8')
         
         categoria_id = self.get_categoria_id('lugares históricos')
@@ -477,7 +512,7 @@ class CSVProcessor:
                     'tipo_ambiente': None,
                     'horario': None,
                     'jurisdiccion': self.clean_text(row.get('jurisdiccion _declaratoria')),
-                    'año_inauguracion': self.clean_text(row.get('fecha_de_inauguracion')),
+                    'año_inauguracion': None,  # La fecha viene en formato dd/mm/yyyy, necesitaríamos parsearla
                     'material': None,
                     'autor': None,
                     'denominacion_simboliza': self.clean_text(row.get('denominacion_especifica')),
@@ -492,28 +527,31 @@ class CSVProcessor:
                 
                 # Validar datos mínimos requeridos
                 if poi_data['latitud'] is None or poi_data['longitud'] is None:
-                    logger.warning(f"⚠️ Lugar histórico sin coordenadas: {nombre}")
+                    logger.warning(f"Lugar histórico sin coordenadas: {nombre}")
                     continue
                     
                 poi_id = self.insert_poi(poi_data)
                 count += 1
                 
                 if count % 10 == 0:
-                    logger.info(f"📍 Procesados {count} lugares históricos...")
+                    logger.info(f"Procesados {count} lugares históricos...")
                     
             except Exception as e:
                 errors += 1
-                logger.error(f"❌ Error procesando lugar histórico {row.get('nombre', 'sin nombre')}: {e}")
+                logger.error(f"Error procesando lugar histórico {row.get('nombre', 'sin nombre')}: {e}")
                 
         self.operational_conn.commit()
-        logger.info(f"✅ Lugares históricos procesados: {count} exitosos, {errors} errores")
+        logger.info(f"Lugares históricos procesados: {count} exitosos, {errors} errores")
         return count
 
     def process_cines_csv(self) -> int:
         """Procesar CSV de salas de cine"""
-        logger.info("🎬 Procesando salas de cine...")
+        logger.info("Procesando salas de cine...")
         
         csv_path = os.path.join(self.csv_base_path, "salas-cine-filtrado.csv")
+        print(f"Intentando leer archivo: {csv_path}")
+        if not os.path.exists(csv_path):
+            raise FileNotFoundError(f"No se encuentra el archivo: {csv_path}")
         df = pd.read_csv(csv_path, encoding='utf-8')
         
         categoria_id = self.get_categoria_id('entretenimiento')
@@ -575,26 +613,53 @@ class CSVProcessor:
                 
                 # Validar datos mínimos requeridos
                 if poi_data['latitud'] is None or poi_data['longitud'] is None:
-                    logger.warning(f"⚠️ Cine sin coordenadas: {nombre}")
+                    logger.warning(f"Cine sin coordenadas: {nombre}")
                     continue
                     
                 poi_id = self.insert_poi(poi_data)
                 count += 1
                 
                 if count % 5 == 0:
-                    logger.info(f"📍 Procesados {count} cines...")
+                    logger.info(f"Procesados {count} cines...")
                     
             except Exception as e:
                 errors += 1
-                logger.error(f"❌ Error procesando cine {row.get('nombre', 'sin nombre')}: {e}")
+                logger.error(f"Error procesando cine {row.get('nombre', 'sin nombre')}: {e}")
                 
         self.operational_conn.commit()
-        logger.info(f"✅ Cines procesados: {count} exitosos, {errors} errores")
+        logger.info(f"Cines procesados: {count} exitosos, {errors} errores")
         return count
+
+    def verify_csv_files(self) -> bool:
+        """Verificar que todos los archivos CSV existan"""
+        required_files = [
+            "museos-filtrado.csv",
+            "oferta-gastronomica.csv",
+            "monumentos-caba.csv",
+            "monumentos-y-lugares-historicos-filtrado.csv",
+            "salas-cine-filtrado.csv"
+        ]
+        
+        print(f"Directorio base de CSVs: {self.csv_base_path}")
+        print("Verificando archivos:")
+        
+        all_exist = True
+        for file in required_files:
+            file_path = os.path.join(self.csv_base_path, file)
+            exists = os.path.exists(file_path)
+            print(f"  {'[OK]' if exists else '[X]'} {file_path}")
+            if not exists:
+                all_exist = False
+                
+        return all_exist
 
     def process_all_csvs(self) -> Dict[str, int]:
         """Procesar todos los CSVs"""
-        logger.info("🚀 Iniciando procesamiento de todos los CSVs...")
+        logger.info("Iniciando procesamiento de todos los CSVs...")
+        
+        # Verificar archivos antes de empezar
+        if not self.verify_csv_files():
+            raise FileNotFoundError("Faltan archivos CSV necesarios")
         
         results = {}
         
@@ -610,14 +675,14 @@ class CSVProcessor:
             results['cines'] = self.process_cines_csv()
             
             total_processed = sum(results.values())
-            logger.info(f"🎉 ¡Procesamiento completado! Total de POIs procesados: {total_processed}")
+            logger.info(f"Procesamiento completado! Total de POIs procesados: {total_processed}")
             
             # Mostrar resumen
             for categoria, count in results.items():
-                logger.info(f"   📊 {categoria.title()}: {count} POIs")
+                logger.info(f"   {categoria.title()}: {count} POIs")
                 
         except Exception as e:
-            logger.error(f"💥 Error general en procesamiento: {e}")
+            logger.error(f"Error general en procesamiento: {e}")
             if self.operational_conn:
                 self.operational_conn.rollback()
             raise
@@ -641,7 +706,7 @@ def main():
         print("="*50)
         
     except Exception as e:
-        logger.error(f"💥 Error ejecutando procesamiento: {e}")
+        logger.error(f"Error ejecutando procesamiento: {e}")
         sys.exit(1)
 
 if __name__ == "__main__":
