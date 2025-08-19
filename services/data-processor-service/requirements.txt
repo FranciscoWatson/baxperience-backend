@@ -1,0 +1,24 @@
+# BAXperience Data Processor - Dependencies
+# =======================================
+
+# Core data processing
+pandas>=1.5.0
+numpy>=1.24.0
+
+# Database connectivity
+psycopg2-binary>=2.9.5
+
+# Environment variables
+python-dotenv>=1.0.0
+
+# Logging and utilities
+python-dateutil>=2.8.0
+
+# Data validation and cleaning
+Unidecode>=1.3.0  # Para limpiar caracteres especiales
+
+# Optional: Progress bars
+tqdm>=4.64.0
+
+# Optional: Data analysis
+scikit-learn>=1.3.0  # Para clustering futuro
