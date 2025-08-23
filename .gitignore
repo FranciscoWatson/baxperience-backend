@@ -39,7 +39,6 @@ docker-compose*.log
 **/.env.docker
 
 # PostgreSQL dumps / data
-*.sql
 *.dump
 *.pgdata/
 pgdata/
