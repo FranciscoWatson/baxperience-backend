@@ -25,3 +25,6 @@ implementar el servicio de api de ciudad de bs as para transporte, etc
 client_id: d5f408da192747d69a4297b3c7d6c341
 client_secret: b010cd785E6c460898BA0AD91D562114
 hacer front
+
+
+ajustar datos de la tabla de pois, fijarse que algunos registros no traen la direccion desestructurada, otros si, tambien ajustar por ejemplo el CP a un formato solo, no que traiga formatos distintos
