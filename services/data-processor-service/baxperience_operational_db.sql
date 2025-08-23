@@ -20,20 +20,17 @@ CREATE TABLE categorias (
     id SERIAL PRIMARY KEY,
     nombre VARCHAR(100) NOT NULL UNIQUE,
     descripcion TEXT,
-    icono VARCHAR(50),
-    color VARCHAR(7),
-    activo BOOLEAN DEFAULT TRUE,
     fecha_creacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 -- Insertar categorías base
-INSERT INTO categorias (nombre, descripcion, icono, color) VALUES 
-('Museos', 'Espacios de exhibición patrimonial y cultural', 'museum', '#8B4513'),
-('Gastronomía', 'Restaurantes, cafés, bares y espacios gastronómicos', 'restaurant', '#FF6347'),
-('Monumentos', 'Monumentos históricos y obras de arte público', 'monument', '#2F4F4F'),
-('Lugares Históricos', 'Sitios de importancia histórica y patrimonial', 'history', '#800080'),
-('Entretenimiento', 'Cines, teatros y espacios de entretenimiento', 'theater', '#FF1493'),
-('Eventos', 'Eventos temporales y actividades culturales', 'event', '#FFD700');
+INSERT INTO categorias (nombre, descripcion) VALUES 
+('Museos', 'Espacios de exhibición patrimonial y cultural'),
+('Gastronomía', 'Restaurantes, cafés, bares y espacios gastronómicos'),
+('Monumentos', 'Monumentos históricos y obras de arte público'),
+('Lugares Históricos', 'Sitios de importancia histórica y patrimonial'),
+('Entretenimiento', 'Cines, teatros y espacios de entretenimiento'),
+('Eventos', 'Eventos temporales y actividades culturales');
 
 -- =================================================================
 -- TABLA: SUBCATEGORIAS
@@ -43,7 +40,6 @@ CREATE TABLE subcategorias (
     categoria_id INTEGER NOT NULL REFERENCES categorias(id),
     nombre VARCHAR(100) NOT NULL,
     descripcion TEXT,
-    activo BOOLEAN DEFAULT TRUE,
 
     UNIQUE (categoria_id, nombre),
 
@@ -96,7 +92,6 @@ CREATE TABLE pois (
     latitud DECIMAL(10, 8) NOT NULL,
     longitud DECIMAL(11, 8) NOT NULL,
     direccion TEXT,
-    direccion_normalizada TEXT,
     calle VARCHAR(150),
     altura VARCHAR(10),
     piso VARCHAR(50),
@@ -115,19 +110,10 @@ CREATE TABLE pois (
     tipo_ambiente VARCHAR(100),
     horario TEXT,
 
-    -- Para museos y cultura
-    jurisdiccion VARCHAR(100),
-    año_inauguracion INTEGER,
-
     -- Para monumentos
     material VARCHAR(200),
     autor VARCHAR(200),
     denominacion_simboliza TEXT,
-
-    -- Para cines
-    numero_pantallas INTEGER,
-    numero_butacas INTEGER,
-    tipo_gestion VARCHAR(50),
 
     -- Métricas y valoraciones
     valoracion_promedio DECIMAL(3,2) DEFAULT 0.0,
@@ -138,8 +124,6 @@ CREATE TABLE pois (
     id_fuente_original VARCHAR(100),
     fecha_creacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     fecha_actualizacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    activo BOOLEAN DEFAULT TRUE,
-    verificado BOOLEAN DEFAULT FALSE,
 
     -- Constraints
     CONSTRAINT check_valoracion_poi CHECK (valoracion_promedio >= 0 AND valoracion_promedio <= 5),
@@ -172,19 +156,11 @@ CREATE TABLE usuarios (
 
     idioma_preferido VARCHAR(10) DEFAULT 'es',
 
-    notificaciones_email BOOLEAN DEFAULT TRUE,
-    notificaciones_push BOOLEAN DEFAULT TRUE,
-    notificaciones_marketing BOOLEAN DEFAULT FALSE,
-
     tipo_viajero VARCHAR(50),
     duracion_viaje_promedio INTEGER,
-    frecuencia_visita VARCHAR(20),
 
     fecha_registro TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    fecha_ultimo_acceso TIMESTAMP,
     fecha_actualizacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    activo BOOLEAN DEFAULT TRUE,
-    email_verificado BOOLEAN DEFAULT FALSE,
 
     CONSTRAINT check_edad CHECK (fecha_nacimiento IS NULL OR fecha_nacimiento <= CURRENT_DATE - INTERVAL '13 years')
 );
@@ -198,11 +174,6 @@ CREATE TABLE preferencias_usuario (
     categoria_id INTEGER NOT NULL REFERENCES categorias(id),
 
     le_gusta BOOLEAN NOT NULL DEFAULT TRUE,
-
-    tipos_cocina_preferidos TEXT[],
-    prefiere_ambiente VARCHAR(50),
-
-    temas_interes TEXT[],
 
     fecha_creacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     fecha_actualizacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -226,11 +197,10 @@ CREATE TABLE itinerarios (
     modo_transporte_preferido VARCHAR(50),
 
     estado VARCHAR(20) DEFAULT 'planificado',
-    es_publico BOOLEAN DEFAULT FALSE,
 
-    hotel_latitud DECIMAL(10, 8),
-    hotel_longitud DECIMAL(11, 8),
-    hotel_direccion TEXT,
+    ubicacion_latitud DECIMAL(10, 8),
+    ubicacion_longitud DECIMAL(11, 8),
+    ubicacion_direccion TEXT,
 
     distancia_total_km DECIMAL(8,2),
     tiempo_estimado_horas DECIMAL(6,2),
@@ -294,19 +264,7 @@ CREATE TABLE valoraciones (
     puntuacion_ambiente DECIMAL(3,2),
     puntuacion_accesibilidad DECIMAL(3,2),
 
-    titulo_review VARCHAR(200),
     comentario TEXT,
-    aspectos_positivos TEXT,
-    aspectos_negativos TEXT,
-    consejos_otros_viajeros TEXT,
-
-    fecha_visita DATE,
-    tipo_visita VARCHAR(50),
-    duracion_visita_minutos INTEGER,
-
-    es_verificada BOOLEAN DEFAULT FALSE,
-    es_destacada BOOLEAN DEFAULT FALSE,
-    util_count INTEGER DEFAULT 0,
 
     fecha_creacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     fecha_actualizacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -346,38 +304,16 @@ CREATE TABLE eventos (
     hora_fin TIME,
     dias_semana VARCHAR(7),
 
-    entrada_libre BOOLEAN DEFAULT TRUE,
-    requiere_inscripcion BOOLEAN DEFAULT FALSE,
-    capacidad_maxima INTEGER,
-    edad_minima INTEGER,
-    edad_maxima INTEGER,
-
     url_evento VARCHAR(500),
     url_inscripcion VARCHAR(500),
     url_compra_tickets VARCHAR(500),
     telefono_contacto VARCHAR(50),
     email_contacto VARCHAR(255),
 
-    organizador VARCHAR(200),
-    patrocinadores TEXT,
-    requisitos_especiales TEXT,
-    que_llevar TEXT,
-
     fecha_scraping TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     url_fuente VARCHAR(500),
-    hash_contenido VARCHAR(64),
 
-    estado VARCHAR(20) DEFAULT 'programado',
-    verificado BOOLEAN DEFAULT FALSE,
-    destacado BOOLEAN DEFAULT FALSE,
-
-    visualizaciones INTEGER DEFAULT 0,
-    interesados INTEGER DEFAULT 0,
-    asistentes_confirmados INTEGER DEFAULT 0,
-
-    CONSTRAINT check_fechas_evento CHECK (fecha_fin IS NULL OR fecha_fin >= fecha_inicio),
-    CONSTRAINT check_capacidad CHECK (capacidad_maxima IS NULL OR capacidad_maxima > 0),
-    CONSTRAINT check_edades CHECK (edad_maxima IS NULL OR edad_minima IS NULL OR edad_maxima >= edad_minima)
+    CONSTRAINT check_fechas_evento CHECK (fecha_fin IS NULL OR fecha_fin >= fecha_inicio)
 );
 
 -- =================================================================
@@ -388,22 +324,22 @@ CREATE TABLE eventos (
 CREATE INDEX idx_pois_geolocation ON pois USING GIST (point(longitud, latitud));
 CREATE INDEX idx_eventos_geolocation ON eventos USING GIST (point(longitud, latitud))
     WHERE longitud IS NOT NULL AND latitud IS NOT NULL;
-CREATE INDEX idx_itinerarios_hotel_location ON itinerarios USING GIST (point(hotel_longitud, hotel_latitud))
-    WHERE hotel_longitud IS NOT NULL AND hotel_latitud IS NOT NULL;
+CREATE INDEX idx_itinerarios_ubicacion_location ON itinerarios USING GIST (point(ubicacion_longitud, ubicacion_latitud))
+    WHERE ubicacion_longitud IS NOT NULL AND ubicacion_latitud IS NOT NULL;
 
 -- Búsquedas frecuentes
-CREATE INDEX idx_pois_categoria ON pois(categoria_id, activo);
+CREATE INDEX idx_pois_categoria ON pois(categoria_id);
 CREATE INDEX idx_pois_barrio ON pois(barrio) WHERE barrio IS NOT NULL;
-CREATE INDEX idx_pois_valoracion ON pois(valoracion_promedio DESC, numero_valoraciones DESC) WHERE activo = true;
+CREATE INDEX idx_pois_valoracion ON pois(valoracion_promedio DESC, numero_valoraciones DESC);
 
-CREATE INDEX idx_usuarios_email ON usuarios(email) WHERE activo = true;
+CREATE INDEX idx_usuarios_email ON usuarios(email);
 CREATE INDEX idx_usuarios_fecha_registro ON usuarios(fecha_registro);
 
 CREATE INDEX idx_itinerarios_usuario ON itinerarios(usuario_id, fecha_inicio DESC);
 CREATE INDEX idx_itinerarios_fechas ON itinerarios(fecha_inicio, fecha_fin) WHERE estado != 'cancelado';
 CREATE INDEX idx_itinerario_pois_orden ON itinerario_pois(itinerario_id, dia_visita, orden_en_dia);
 
-CREATE INDEX idx_eventos_fechas ON eventos(fecha_inicio, fecha_fin) WHERE estado = 'programado';
+CREATE INDEX idx_eventos_fechas ON eventos(fecha_inicio, fecha_fin);
 CREATE INDEX idx_eventos_categoria ON eventos(categoria_evento, tematica);
 CREATE INDEX idx_eventos_poi ON eventos(poi_id) WHERE poi_id IS NOT NULL;
 
@@ -454,10 +390,9 @@ RETURNS INTEGER AS $$
 DECLARE
     eventos_eliminados INTEGER;
 BEGIN
-    UPDATE eventos 
-    SET estado = 'finalizado'
+    DELETE FROM eventos 
     WHERE fecha_fin < CURRENT_DATE 
-      AND estado = 'programado';
+      AND fecha_fin IS NOT NULL;
     
     GET DIAGNOSTICS eventos_eliminados = ROW_COUNT;
     RETURN eventos_eliminados;
@@ -525,5 +460,3 @@ COMMENT ON TABLE eventos IS 'Eventos temporales scrapeados del sitio oficial de 
 
 COMMENT ON COLUMN pois.fuente_original IS 'Fuente del dato original (csv_museos, csv_gastronomia, etc.)';
 COMMENT ON COLUMN pois.id_fuente_original IS 'ID original en el dataset fuente para trazabilidad';
-COMMENT ON COLUMN eventos.hash_contenido IS 'Hash MD5 del contenido para detectar cambios';
-COMMENT ON COLUMN itinerarios.es_publico IS 'Si otros usuarios pueden ver y copiar este itinerario';

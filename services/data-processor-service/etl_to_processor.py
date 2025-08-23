@@ -95,7 +95,6 @@ class ETLProcessor:
             -- Features categóricos (para one-hot encoding)
             tipo_cocina VARCHAR(100),
             tipo_ambiente VARCHAR(100),
-            jurisdiccion VARCHAR(100),
             material VARCHAR(200),
             
             -- Features binarios
@@ -164,10 +163,8 @@ class ETLProcessor:
             mes_inicio INTEGER, -- 1-12 para clustering estacional
             dia_semana_inicio INTEGER, -- 1-7 para clustering por día
             
-            -- Features
-            entrada_libre BOOLEAN DEFAULT TRUE,
-            requiere_inscripcion BOOLEAN DEFAULT FALSE,
-            capacidad_maxima INTEGER,
+            -- Features (campos simplificados)
+            url_evento VARCHAR(500),
             
             -- Metadata
             fecha_scraping TIMESTAMP,
@@ -205,17 +202,14 @@ class ETLProcessor:
             p.numero_valoraciones,
             p.tipo_cocina,
             p.tipo_ambiente,
-            p.jurisdiccion,
             p.material,
             p.web,
             p.telefono,
-            p.fuente_original,
-            p.activo
+            p.fuente_original
         FROM pois p
         JOIN categorias c ON p.categoria_id = c.id
         LEFT JOIN subcategorias s ON p.subcategoria_id = s.id
-        WHERE p.activo = TRUE
-        AND p.latitud IS NOT NULL 
+        WHERE p.latitud IS NOT NULL 
         AND p.longitud IS NOT NULL
         ORDER BY p.id
         """
@@ -234,14 +228,14 @@ class ETLProcessor:
             poi_id, nombre, categoria, subcategoria,
             latitud, longitud, barrio, comuna,
             valoracion_promedio, numero_valoraciones, popularidad_score,
-            tipo_cocina, tipo_ambiente, jurisdiccion, material,
+            tipo_cocina, tipo_ambiente, material,
             tiene_web, tiene_telefono, es_gratuito,
             fuente_original, activo
         ) VALUES (
             %(poi_id)s, %(nombre)s, %(categoria)s, %(subcategoria)s,
             %(latitud)s, %(longitud)s, %(barrio)s, %(comuna)s,
             %(valoracion_promedio)s, %(numero_valoraciones)s, %(popularidad_score)s,
-            %(tipo_cocina)s, %(tipo_ambiente)s, %(jurisdiccion)s, %(material)s,
+            %(tipo_cocina)s, %(tipo_ambiente)s, %(material)s,
             %(tiene_web)s, %(tiene_telefono)s, %(es_gratuito)s,
             %(fuente_original)s, %(activo)s
         )
@@ -268,13 +262,12 @@ class ETLProcessor:
                     'popularidad_score': popularidad_score,
                     'tipo_cocina': poi['tipo_cocina'],
                     'tipo_ambiente': poi['tipo_ambiente'],
-                    'jurisdiccion': poi['jurisdiccion'],
                     'material': poi['material'],
                     'tiene_web': bool(poi['web']),
                     'tiene_telefono': bool(poi['telefono']),
                     'es_gratuito': es_gratuito,
                     'fuente_original': poi['fuente_original'],
-                    'activo': poi['activo']
+                    'activo': True  # Por defecto activo ya que no existe el campo
                 }
                 
                 proc_cursor.execute(insert_query, transformed_data)
@@ -379,11 +372,10 @@ class ETLProcessor:
             id, nombre, categoria_evento, tematica,
             poi_id, latitud, longitud, barrio,
             fecha_inicio, fecha_fin,
-            entrada_libre, requiere_inscripcion, capacidad_maxima,
-            fecha_scraping, estado
+            url_evento,
+            fecha_scraping
         FROM eventos
-        WHERE estado = 'programado'
-        AND fecha_inicio >= CURRENT_DATE
+        WHERE fecha_inicio >= CURRENT_DATE
         ORDER BY fecha_inicio
         """
         
@@ -405,14 +397,14 @@ class ETLProcessor:
             poi_id, latitud, longitud, barrio,
             fecha_inicio, fecha_fin, duracion_dias,
             mes_inicio, dia_semana_inicio,
-            entrada_libre, requiere_inscripcion, capacidad_maxima,
+            url_evento,
             fecha_scraping, activo
         ) VALUES (
             %(evento_id)s, %(nombre)s, %(categoria_evento)s, %(tematica)s,
             %(poi_id)s, %(latitud)s, %(longitud)s, %(barrio)s,
             %(fecha_inicio)s, %(fecha_fin)s, %(duracion_dias)s,
             %(mes_inicio)s, %(dia_semana_inicio)s,
-            %(entrada_libre)s, %(requiere_inscripcion)s, %(capacidad_maxima)s,
+            %(url_evento)s,
             %(fecha_scraping)s, %(activo)s
         )
         """
@@ -445,9 +437,7 @@ class ETLProcessor:
                     'duracion_dias': duracion_dias,
                     'mes_inicio': mes_inicio,
                     'dia_semana_inicio': dia_semana_inicio,
-                    'entrada_libre': evento['entrada_libre'],
-                    'requiere_inscripcion': evento['requiere_inscripcion'],
-                    'capacidad_maxima': evento['capacidad_maxima'],
+                    'url_evento': evento['url_evento'],
                     'fecha_scraping': evento['fecha_scraping'],
                     'activo': True
                 }
@@ -462,6 +452,57 @@ class ETLProcessor:
         proc_cursor.close()
         
         logger.info(f"ETL Eventos completado: {count} registros cargados")
+        return count
+    
+    def insertar_eventos_desde_scraper(self, eventos_data) -> int:
+        """
+        Insertar eventos obtenidos del scraper en la BD operacional
+        Solo incluye campos que existen en el nuevo esquema
+        """
+        logger.info("Insertando eventos desde scraper...")
+        
+        cursor = self.operational_conn.cursor()
+        
+        # Query ajustada al nuevo esquema (sin campos eliminados)
+        insert_query = """
+        INSERT INTO eventos (
+            nombre, descripcion, categoria_evento, tematica,
+            direccion_evento, ubicacion_especifica, latitud, longitud, barrio,
+            fecha_inicio, dias_semana, hora_inicio, hora_fin,
+            url_evento, fecha_scraping, url_fuente
+        ) VALUES (
+            %(nombre)s, %(descripcion)s, %(categoria_evento)s, %(tematica)s,
+            %(direccion_evento)s, %(ubicacion_especifica)s, %(latitud)s, %(longitud)s, %(barrio)s,
+            CURRENT_DATE, %(dias_semana)s, %(hora_inicio)s, %(hora_fin)s,
+            %(url_evento)s, %(fecha_scraping)s, %(url_fuente)s
+        )
+        ON CONFLICT DO NOTHING
+        """
+        
+        count = 0
+        errores = 0
+        
+        for evento in eventos_data.get('eventos', []):
+            try:
+                # Extraer solo los campos que van a la BD (sin campos extra)
+                from scraper.turismo import extraer_datos_para_bd_eventos
+                evento_bd = extraer_datos_para_bd_eventos(evento)
+                
+                cursor.execute(insert_query, evento_bd)
+                count += 1
+                
+                if count % 50 == 0:
+                    logger.info(f"Insertados {count} eventos...")
+                    
+            except Exception as e:
+                errores += 1
+                logger.warning(f"Error insertando evento {evento.get('nombre', 'Sin nombre')}: {e}")
+                continue
+        
+        self.operational_conn.commit()
+        cursor.close()
+        
+        logger.info(f"Inserción de eventos completada: {count} exitosos, {errores} errores")
         return count
         
     def run_full_etl(self) -> Dict[str, int]:

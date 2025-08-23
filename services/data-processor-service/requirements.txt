@@ -1,9 +1,9 @@
-# BAXperience Data Processor - Dependencies
-# =======================================
+# BAXperience Data Processor - Dependencies (Python 3.13 Compatible)
+# ===================================================================
 
-# Core data processing
-numpy==1.24.3
-pandas==2.0.3
+# Core data processing (versiones compatibles con Python 3.13)
+numpy>=1.24.0
+pandas>=2.0.0
 
 # Database connectivity
 psycopg2-binary>=2.9.5
@@ -15,10 +15,14 @@ python-dotenv>=1.0.0
 python-dateutil>=2.8.0
 
 # Data validation and cleaning
-Unidecode>=1.3.0  # Para limpiar caracteres especiales
+Unidecode>=1.3.0
 
-# Optional: Progress bars
+# Progress bars
 tqdm>=4.64.0
 
-# Optional: Data analysis
-scikit-learn>=1.3.0  # Para clustering futuro
+# Data analysis
+scikit-learn>=1.3.0
+
+# Build tools (necesarios para Python 3.13)
+setuptools>=65.0.0
+wheel>=0.37.0

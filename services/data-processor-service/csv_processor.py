@@ -177,26 +177,20 @@ class CSVProcessor:
         insert_query = """
         INSERT INTO pois (
             nombre, descripcion, categoria_id, subcategoria_id,
-            latitud, longitud, direccion, direccion_normalizada,
+            latitud, longitud, direccion,
             calle, altura, piso, codigo_postal, barrio, comuna,
             telefono, codigo_area, email, web,
             tipo_cocina, tipo_ambiente, horario,
-            jurisdiccion, año_inauguracion,
             material, autor, denominacion_simboliza,
-            numero_pantallas, numero_butacas, tipo_gestion,
-            fuente_original, id_fuente_original,
-            activo, verificado
+            fuente_original, id_fuente_original
         ) VALUES (
             %(nombre)s, %(descripcion)s, %(categoria_id)s, %(subcategoria_id)s,
-            %(latitud)s, %(longitud)s, %(direccion)s, %(direccion_normalizada)s,
+            %(latitud)s, %(longitud)s, %(direccion)s,
             %(calle)s, %(altura)s, %(piso)s, %(codigo_postal)s, %(barrio)s, %(comuna)s,
             %(telefono)s, %(codigo_area)s, %(email)s, %(web)s,
             %(tipo_cocina)s, %(tipo_ambiente)s, %(horario)s,
-            %(jurisdiccion)s, %(año_inauguracion)s,
             %(material)s, %(autor)s, %(denominacion_simboliza)s,
-            %(numero_pantallas)s, %(numero_butacas)s, %(tipo_gestion)s,
-            %(fuente_original)s, %(id_fuente_original)s,
-            %(activo)s, %(verificado)s
+            %(fuente_original)s, %(id_fuente_original)s
         ) RETURNING id
         """
         
@@ -246,7 +240,6 @@ class CSVProcessor:
                     'latitud': self.clean_coordinate(row.get('Latitud')),
                     'longitud': self.clean_coordinate(row.get('Longitud')),
                     'direccion': self.clean_text(row.get('direccion')),
-                    'direccion_normalizada': None,
                     'calle': None,
                     'altura': None,
                     'piso': self.clean_text(row.get('piso')),
@@ -260,18 +253,11 @@ class CSVProcessor:
                     'tipo_cocina': None,
                     'tipo_ambiente': None,
                     'horario': None,
-                    'jurisdiccion': self.clean_text(row.get('jurisdiccion')),
-                    'año_inauguracion': int(float(row.get('año_inauguracion'))) if pd.notna(row.get('año_inauguracion')) else None,
                     'material': None,
                     'autor': None,
                     'denominacion_simboliza': None,
-                    'numero_pantallas': None,
-                    'numero_butacas': None,
-                    'tipo_gestion': None,
                     'fuente_original': 'csv_museos',
-                    'id_fuente_original': self.clean_text(row.get('Cod_Loc')),
-                    'activo': True,
-                    'verificado': False
+                    'id_fuente_original': self.clean_text(row.get('Cod_Loc'))
                 }
                 
                 # Validar datos mínimos requeridos
@@ -343,7 +329,6 @@ class CSVProcessor:
                     'latitud': self.clean_coordinate(row.get('lat')),
                     'longitud': self.clean_coordinate(row.get('long')),
                     'direccion': self.clean_text(row.get('direccion_completa')),
-                    'direccion_normalizada': None,
                     'calle': self.clean_text(row.get('calle_nombre')),
                     'altura': self.clean_text(row.get('calle_altura')),
                     'piso': None,
@@ -357,18 +342,11 @@ class CSVProcessor:
                     'tipo_cocina': self.clean_text(row.get('cocina')),
                     'tipo_ambiente': self.clean_text(row.get('ambientacion')),
                     'horario': self.clean_text(row.get('horario')),
-                    'jurisdiccion': None,
-                    'año_inauguracion': None,
                     'material': None,
                     'autor': None,
                     'denominacion_simboliza': None,
-                    'numero_pantallas': None,
-                    'numero_butacas': None,
-                    'tipo_gestion': None,
                     'fuente_original': 'csv_gastronomia',
-                    'id_fuente_original': self.clean_text(row.get('id')),
-                    'activo': True,
-                    'verificado': False
+                    'id_fuente_original': self.clean_text(row.get('id'))
                 }
                 
                 # Validar datos mínimos requeridos
@@ -420,7 +398,6 @@ class CSVProcessor:
                     'latitud': self.clean_coordinate(row.get('LATITUD')),
                     'longitud': self.clean_coordinate(row.get('LONGITUD')),
                     'direccion': self.clean_text(row.get('DIRECCION_NORMALIZADA')),
-                    'direccion_normalizada': self.clean_text(row.get('DIRECCION_NORMALIZADA')),
                     'calle': self.clean_text(row.get('CALLE')),
                     'altura': str(row.get('ALTURA')) if pd.notna(row.get('ALTURA')) else None,
                     'piso': None,
@@ -434,18 +411,11 @@ class CSVProcessor:
                     'tipo_cocina': None,
                     'tipo_ambiente': None,
                     'horario': None,
-                    'jurisdiccion': None,
-                    'año_inauguracion': None,
                     'material': self.clean_text(row.get('MATERIAL')),
                     'autor': self.clean_text(row.get('AUTORES')),
                     'denominacion_simboliza': nombre,
-                    'numero_pantallas': None,
-                    'numero_butacas': None,
-                    'tipo_gestion': None,
                     'fuente_original': 'csv_monumentos',
-                    'id_fuente_original': self.clean_text(row.get('ID')),
-                    'activo': True,
-                    'verificado': False
+                    'id_fuente_original': self.clean_text(row.get('ID'))
                 }
                 
                 # Validar datos mínimos requeridos
@@ -497,7 +467,6 @@ class CSVProcessor:
                     'latitud': self.clean_coordinate(row.get('latitud')),
                     'longitud': self.clean_coordinate(row.get('longitud')),
                     'direccion': self.clean_text(row.get('direccion')),
-                    'direccion_normalizada': None,
                     'calle': None,
                     'altura': None,
                     'piso': None,
@@ -511,18 +480,11 @@ class CSVProcessor:
                     'tipo_cocina': None,
                     'tipo_ambiente': None,
                     'horario': None,
-                    'jurisdiccion': self.clean_text(row.get('jurisdiccion _declaratoria')),
-                    'año_inauguracion': None,  # La fecha viene en formato dd/mm/yyyy, necesitaríamos parsearla
                     'material': None,
                     'autor': None,
                     'denominacion_simboliza': self.clean_text(row.get('denominacion_especifica')),
-                    'numero_pantallas': None,
-                    'numero_butacas': None,
-                    'tipo_gestion': None,
                     'fuente_original': 'csv_lugares_historicos',
-                    'id_fuente_original': self.clean_text(row.get('espacio_cultural_id')),
-                    'activo': True,
-                    'verificado': False
+                    'id_fuente_original': self.clean_text(row.get('espacio_cultural_id'))
                 }
                 
                 # Validar datos mínimos requeridos
@@ -583,7 +545,6 @@ class CSVProcessor:
                     'latitud': self.clean_coordinate(row.get('latitud')),
                     'longitud': self.clean_coordinate(row.get('longitud')),
                     'direccion': self.clean_text(row.get('direccion')),
-                    'direccion_normalizada': None,
                     'calle': None,
                     'altura': None,
                     'piso': self.clean_text(row.get('piso')),
@@ -597,18 +558,11 @@ class CSVProcessor:
                     'tipo_cocina': None,
                     'tipo_ambiente': None,
                     'horario': None,
-                    'jurisdiccion': None,
-                    'año_inauguracion': self.clean_text(row.get('año_actualizacion')),
                     'material': None,
                     'autor': None,
                     'denominacion_simboliza': None,
-                    'numero_pantallas': pantallas,
-                    'numero_butacas': butacas,
-                    'tipo_gestion': self.clean_text(row.get('tipo_de_gestion')),
                     'fuente_original': 'csv_cines',
-                    'id_fuente_original': self.clean_text(row.get('cod_localidad')),
-                    'activo': True,
-                    'verificado': False
+                    'id_fuente_original': self.clean_text(row.get('cod_localidad'))
                 }
                 
                 # Validar datos mínimos requeridos
