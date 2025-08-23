@@ -23,6 +23,9 @@ tqdm>=4.64.0
 # Data analysis
 scikit-learn>=1.3.0
 
+# Clustering específico para datos categóricos
+kmodes>=0.12.2
+
 # Build tools (necesarios para Python 3.13)
 setuptools>=65.0.0
 wheel>=0.37.0

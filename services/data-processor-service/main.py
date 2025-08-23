@@ -24,6 +24,8 @@ import logging
 
 from csv_processor import CSVProcessor
 from etl_to_processor import ETLProcessor
+from clustering_processor import ClusteringProcessor
+# from clustering_etl_original import ClusteringETLOriginal  # Archivo eliminado
 
 # Configurar logging
 logging.basicConfig(
@@ -92,14 +94,86 @@ class DataProcessorOrchestrator:
             return False
             
     def run_clustering(self) -> bool:
-        """Ejecutar algoritmos de clustering (placeholder para futuro)"""
-        logger.info("Preparando clustering...")
+        """Ejecutar algoritmos de clustering según ETL original"""
+        logger.info("Iniciando algoritmos de clustering ETL original...")
         
-        # TODO: Implementar algoritmos de clustering
-        logger.info("Clustering no implementado aun - coming soon!")
+        try:
+            # Usar la misma configuración que el ETL
+            from csv_processor import DatabaseConfig
+            proc_db_config = DatabaseConfig.PROCESSOR_DB
+            
+            # Ejecutar clustering original (ya implementado)
+            clustering = ClusteringProcessor(proc_db_config)
+            clustering_results = clustering.run_full_clustering()
+            
+            if clustering_results.get('status') == 'error':
+                logger.error(f"Error en clustering ETL: {clustering_results.get('message')}")
+                self.results['clustering'] = {'status': 'failed', 'error': clustering_results.get('message')}
+                return False
+            
+            # Extraer métricas del resumen
+            summary = clustering_results.get('summary', {})
+            
+            self.results['clustering'] = {
+                'status': 'completed',
+                'pois_processed': summary.get('total_pois_processed', 0),
+                'algorithms_executed': summary.get('algorithms_executed', 0),
+                'successful_algorithms': summary.get('successful_algorithms', []),
+                'tourist_zones': summary.get('tourist_zones_detected', 0),
+                'neighborhoods': summary.get('neighborhoods_analyzed', 0)
+            }
+            
+            logger.info(f"Clustering completado: {summary.get('total_pois_processed', 0)} POIs procesados")
+            logger.info(f"Zonas turísticas detectadas: {summary.get('tourist_zones_detected', 0)}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error en clustering ETL: {e}")
+            self.results['clustering'] = {'status': 'failed', 'error': str(e)}
+            return False
+    
+    def run_recommendations(self) -> bool:
+        """Ejecutar sistema de recomendaciones"""
+        logger.info("Iniciando sistema de recomendaciones...")
         
-        self.results['clustering'] = {'status': 'pending'}
-        return True
+        try:
+            from recommendation_service import generate_itinerary_request
+            
+            # Simular request de usuario
+            user_id = 123
+            request_data = {
+                'categorias_preferidas': ['Museos', 'Gastronomía'],
+                'zona_preferida': 'Palermo',
+                'duracion_preferida': 8,
+                'presupuesto': 'medio',
+                'tipo_compania': 'pareja'
+            }
+            
+            # Generar itinerario de prueba
+            result = generate_itinerary_request(user_id, request_data)
+            
+            if 'error' in result:
+                logger.error(f"Error en recomendaciones: {result['error']}")
+                self.results['recommendations'] = {'status': 'failed', 'error': result['error']}
+                return False
+            
+            # Extraer métricas
+            self.results['recommendations'] = {
+                'status': 'completed',
+                'itinerario_id': result.get('itinerario_id', 'N/A'),
+                'actividades_generadas': len(result.get('actividades', [])),
+                'duracion_horas': result.get('estadisticas', {}).get('duracion_total_horas', 0),
+                'costo_estimado': result.get('estadisticas', {}).get('costo_estimado', 'N/A'),
+                'pois_analizados': result.get('metadata', {}).get('total_pois_analizados', 0)
+            }
+            
+            logger.info(f"Recomendaciones completadas: {len(result.get('actividades', []))} actividades generadas")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error en recomendaciones: {e}")
+            self.results['recommendations'] = {'status': 'failed', 'error': str(e)}
+            return False
         
     def print_summary(self):
         """Mostrar resumen de resultados"""
@@ -131,7 +205,34 @@ class DataProcessorOrchestrator:
         if 'clustering' in self.results:
             print("CLUSTERING:")
             clustering_results = self.results['clustering']
-            print(f"   Estado: {clustering_results.get('status', 'unknown')}")
+            status = clustering_results.get('status', 'unknown')
+            print(f"   Estado: {status}")
+            
+            if status == 'completed':
+                print(f"   POIs procesados: {clustering_results.get('pois_processed', 0)}")
+                print(f"   Algoritmos ejecutados: {clustering_results.get('algorithms_executed', 0)}")
+                algorithms = clustering_results.get('successful_algorithms', [])
+                print(f"   Algoritmos exitosos: {', '.join(algorithms) if algorithms else 'Ninguno'}")
+                print(f"   Zonas turísticas: {clustering_results.get('tourist_zones', 0)}")
+                print(f"   Barrios analizados: {clustering_results.get('neighborhoods', 0)}")
+            elif status == 'failed':
+                print(f"   Error: {clustering_results.get('error', 'Desconocido')}")
+            print()
+            
+        if 'recommendations' in self.results:
+            print("SISTEMA DE RECOMENDACIONES:")
+            rec_results = self.results['recommendations']
+            status = rec_results.get('status', 'unknown')
+            print(f"   Estado: {status}")
+            
+            if status == 'completed':
+                print(f"   Itinerario ID: {rec_results.get('itinerario_id', 'N/A')}")
+                print(f"   Actividades generadas: {rec_results.get('actividades_generadas', 0)}")
+                print(f"   Duración: {rec_results.get('duracion_horas', 0):.1f} horas")
+                print(f"   Costo estimado: {rec_results.get('costo_estimado', 'N/A')}")
+                print(f"   POIs analizados: {rec_results.get('pois_analizados', 0)}")
+            elif status == 'failed':
+                print(f"   Error: {rec_results.get('error', 'Desconocido')}")
             print()
             
         print("="*70)
@@ -151,8 +252,12 @@ class DataProcessorOrchestrator:
             if not self.run_etl_processing():
                 success = False
                 
-        if mode == 'full' and success:
+        if mode in ['clustering', 'full'] and success:
             if not self.run_clustering():
+                success = False
+                
+        if mode in ['recommendations', 'full'] and success:
+            if not self.run_recommendations():
                 success = False
                 
         return success
@@ -162,9 +267,9 @@ def main():
     parser = argparse.ArgumentParser(description='BAXperience Data Processor')
     parser.add_argument(
         '--mode', 
-        choices=['csv', 'etl', 'full'], 
+        choices=['csv', 'etl', 'clustering', 'recommendations', 'full'], 
         default='full',
-        help='Modo de ejecución: csv (solo CSVs), etl (solo ETL), full (completo)'
+        help='Modo de ejecución: csv (solo CSVs), etl (solo ETL), clustering (solo clustering), recommendations (solo recomendaciones), full (completo)'
     )
     parser.add_argument(
         '--verbose', 
