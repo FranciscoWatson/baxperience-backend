@@ -1,6 +1,12 @@
 from scraper.turismo import scrap_turismo, formatear_para_data_processor
 import json
 from datetime import datetime
+import os
+import logging
+
+# Configurar logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 def main():
     """
@@ -42,11 +48,73 @@ def main():
             print(f"  Días: {ejemplo['dias_semana']} | Precio: {ejemplo['categoria_precio']}")
         
         print(f"\n JSON listo para data processor en: {archivo_json}")
+        
+        # Enviar evento a Kafka automáticamente
+        try:
+            send_to_kafka(datos_json, archivo_json)
+            print(f"✅ Evento enviado a Kafka automáticamente")
+        except Exception as e:
+            print(f"⚠️ Error enviando a Kafka: {e}")
+            print(f"   Los datos están disponibles en: {archivo_json}")
+        
         return datos_json
         
     else:
         print("[scraper-service]  No se pudieron obtener eventos")
         return None
+
+def send_to_kafka(datos_json, archivo_json):
+    """
+    Enviar datos del scraper a Kafka automáticamente
+    """
+    try:
+        from kafka import KafkaProducer
+        
+        # Conectar a Kafka
+        producer = KafkaProducer(
+            bootstrap_servers='localhost:9092',
+            value_serializer=lambda v: json.dumps(v).encode('utf-8'),
+            key_serializer=lambda k: k.encode('utf-8') if k else None
+        )
+        
+        # Preparar evento para Kafka
+        scraper_event = {
+            "event_type": "scraper_data",
+            "timestamp": datetime.now().isoformat(),
+            "data": {
+                "events_count": datos_json['metadata']['total_eventos'],
+                "events": datos_json['eventos'][:3],  # Solo los primeros 3 para el log
+                "source_file": archivo_json,
+                "scraping_timestamp": datetime.now().isoformat(),
+                "metadata": {
+                    "total_eventos": datos_json['metadata']['total_eventos'],
+                    "con_coordenadas": sum(1 for e in datos_json['eventos'] if e['latitud'] is not None),
+                    "organizadores_unicos": len(set(e['organizador'] for e in datos_json['eventos'] if e['organizador'])),
+                    "barrios_unicos": len(set(e['barrio'] for e in datos_json['eventos'] if e['barrio']))
+                }
+            }
+        }
+        
+        # Enviar a Kafka
+        future = producer.send(
+            'scraper-events',
+            key='scraper_data',
+            value=scraper_event
+        )
+        future.get()  # Esperar confirmación
+        
+        producer.close()
+        
+        print(f"📤 Evento enviado a Kafka: {scraper_event['data']['events_count']} eventos")
+        
+    except ImportError:
+        print("⚠️ kafka-python no está instalado. Instalando...")
+        os.system("pip install kafka-python")
+        # Reintentar después de instalar
+        send_to_kafka(datos_json, archivo_json)
+    except Exception as e:
+        print(f"❌ Error enviando a Kafka: {e}")
+        raise
 
 if __name__ == "__main__":
     main()

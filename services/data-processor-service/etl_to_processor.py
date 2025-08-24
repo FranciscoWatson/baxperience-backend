@@ -460,8 +460,33 @@ class ETLProcessor:
         Solo incluye campos que existen en el nuevo esquema
         """
         logger.info("Insertando eventos desde scraper...")
+        logger.info(f"Tipo de datos recibidos: {type(eventos_data)}")
+        logger.info(f"Claves disponibles: {list(eventos_data.keys()) if isinstance(eventos_data, dict) else 'No es dict'}")
+        
+        if isinstance(eventos_data, dict) and 'eventos' in eventos_data:
+            logger.info(f"Número de eventos: {len(eventos_data['eventos'])}")
+            if eventos_data['eventos']:
+                logger.info(f"Ejemplo de evento: {eventos_data['eventos'][0].get('nombre', 'Sin nombre')}")
+        else:
+            logger.warning("No se encontraron eventos en los datos")
+            return 0
         
         cursor = self.operational_conn.cursor()
+        
+        # Verificar que la tabla eventos existe
+        cursor.execute("""
+            SELECT EXISTS (
+                SELECT FROM information_schema.tables 
+                WHERE table_schema = 'public' 
+                AND table_name = 'eventos'
+            );
+        """)
+        tabla_existe = cursor.fetchone()[0]
+        logger.info(f"Tabla eventos existe: {tabla_existe}")
+        
+        if not tabla_existe:
+            logger.error("La tabla eventos no existe en la base de datos operacional")
+            return 0
         
         # Query ajustada al nuevo esquema (sin campos eliminados)
         insert_query = """
@@ -485,8 +510,27 @@ class ETLProcessor:
         for evento in eventos_data.get('eventos', []):
             try:
                 # Extraer solo los campos que van a la BD (sin campos extra)
-                from scraper.turismo import extraer_datos_para_bd_eventos
-                evento_bd = extraer_datos_para_bd_eventos(evento)
+                evento_bd = {
+                    "nombre": evento.get('nombre', ''),
+                    "descripcion": evento.get('descripcion', ''),
+                    "categoria_evento": evento.get('categoria_evento', ''),
+                    "tematica": evento.get('tematica', ''),
+                    "direccion_evento": evento.get('direccion_evento', ''),
+                    "ubicacion_especifica": evento.get('ubicacion_especifica', ''),
+                    "latitud": evento.get('latitud'),
+                    "longitud": evento.get('longitud'),
+                    "barrio": evento.get('barrio', ''),
+                    "dias_semana": evento.get('dias_semana', ''),
+                    "hora_inicio": evento.get('hora_inicio'),
+                    "hora_fin": evento.get('hora_fin'),
+                    "url_evento": evento.get('url_evento', ''),
+                    "fecha_scraping": evento.get('fecha_scraping'),
+                    "url_fuente": evento.get('url_fuente', '')
+                }
+                
+                # Debug: mostrar el primer evento
+                if count == 0:
+                    logger.info(f"Primer evento a insertar: {evento_bd}")
                 
                 cursor.execute(insert_query, evento_bd)
                 count += 1
@@ -496,7 +540,8 @@ class ETLProcessor:
                     
             except Exception as e:
                 errores += 1
-                logger.warning(f"Error insertando evento {evento.get('nombre', 'Sin nombre')}: {e}")
+                logger.error(f"Error insertando evento {evento.get('nombre', 'Sin nombre')}: {e}")
+                logger.error(f"Datos del evento: {evento}")
                 continue
         
         self.operational_conn.commit()

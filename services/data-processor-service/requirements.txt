@@ -29,3 +29,15 @@ kmodes>=0.12.2
 # Build tools (necesarios para Python 3.13)
 setuptools>=65.0.0
 wheel>=0.37.0
+
+# Kafka integration
+kafka-python==2.0.2
+confluent-kafka==2.3.0
+
+# FastAPI for service endpoints
+fastapi==0.104.1
+uvicorn==0.24.0
+pydantic>=2.0.0
+
+# HTTP requests
+requests==2.31.0
