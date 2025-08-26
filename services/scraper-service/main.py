@@ -83,7 +83,7 @@ def send_to_kafka(datos_json, archivo_json):
             "timestamp": datetime.now().isoformat(),
             "data": {
                 "events_count": datos_json['metadata']['total_eventos'],
-                "events": datos_json['eventos'][:3],  # Solo los primeros 3 para el log
+                "events": datos_json['eventos'],  # Enviar TODOS los eventos
                 "source_file": archivo_json,
                 "scraping_timestamp": datetime.now().isoformat(),
                 "metadata": {

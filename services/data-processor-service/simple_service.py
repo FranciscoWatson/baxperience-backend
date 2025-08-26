@@ -212,13 +212,13 @@ class DataProcessorService:
         logger.info("⚙️ Procesando evento del scraper...")
         
         try:
-            # 1. Ejecutar ETL
-            logger.info("🔄 Ejecutando ETL...")
-            etl_result = self._run_etl(event_data)
-            
-            # 2. Insertar eventos del scraper
-            logger.info("📥 Insertando eventos del scraper...")
+            # 1. Insertar eventos del scraper PRIMERO
+            logger.info("� Insertando eventos del scraper...")
             scraper_events_result = self._insert_scraper_events(event_data)
+            
+            # 2. Ejecutar ETL completo
+            logger.info("� Ejecutando ETL completo...")
+            etl_result = self._run_etl(event_data)
             
             # 3. Ejecutar Clustering
             logger.info("🧠 Ejecutando clustering...")
@@ -228,9 +228,12 @@ class DataProcessorService:
             self._publish_completion_events(etl_result, scraper_events_result, clustering_result)
             
             logger.info("✅ Procesamiento completado exitosamente")
+            logger.info(f"📊 Resumen: {scraper_events_result.get('eventos_insertados', 0)} eventos insertados, {etl_result.get('pois_processed', 0)} POIs procesados, {clustering_result.get('clusters_created', 0)} clusters creados")
             
         except Exception as e:
             logger.error(f"❌ Error en procesamiento: {e}")
+            import traceback
+            logger.error(f"❌ Traceback: {traceback.format_exc()}")
     
     def _run_etl(self, event_data: Dict[str, Any]) -> Dict[str, Any]:
         """Ejecutar ETL"""
@@ -245,20 +248,11 @@ class DataProcessorService:
                 etl_processor = ETLProcessor()
                 etl_result = etl_processor.run_full_etl()
                 
-                # También procesar eventos del scraper si están disponibles
-                if 'data' in event_data and 'eventos' in event_data['data']:
-                    logger.info("📥 Procesando eventos del scraper en ETL...")
-                    # Conectar a las bases de datos para insertar eventos
-                    etl_processor.connect_databases()
-                    eventos_insertados = etl_processor.insertar_eventos_desde_scraper(event_data['data'])
-                    etl_processor.disconnect_databases()
-                    etl_result['eventos_scraper'] = eventos_insertados
-                
                 logger.info(f"✅ ETL real completado: {etl_result}")
                 return {
                     "pois_processed": etl_result.get('pois', 0),
                     "eventos_processed": etl_result.get('eventos', 0),
-                    "eventos_scraper": etl_result.get('eventos_scraper', 0),
+                    "barrios_processed": etl_result.get('barrios', 0),
                     "processing_time_seconds": etl_result.get('processing_time', 0),
                     "status": "completed",
                     "etl_details": etl_result
@@ -267,7 +261,7 @@ class DataProcessorService:
             except ImportError as e:
                 logger.warning(f"⚠️ No se pudo importar ETL real: {e}")
                 # Fallback a simulación
-                events_count = event_data['data']['events_count']
+                events_count = event_data.get('data', {}).get('events_count', 0)
                 etl_result = {
                     "pois_processed": events_count,
                     "processing_time_seconds": 2.5,
@@ -327,6 +321,19 @@ class DataProcessorService:
         """Insertar eventos del scraper en la BD operacional"""
         try:
             logger.info("📥 Insertando eventos del scraper en BD operacional...")
+            
+            # Validar que tengamos datos - CORREGIDO: buscar en 'events' no en 'eventos'
+            events_list = event_data.get('data', {}).get('events', [])
+            if not events_list:
+                logger.warning("No hay eventos para insertar")
+                return {
+                    "eventos_insertados": 0,
+                    "status": "no_events",
+                    "message": "No hay eventos en los datos recibidos"
+                }
+            
+            logger.info(f"📝 Procesando {len(events_list)} eventos del scraper...")
+            
             try:
                 from etl_to_processor import ETLProcessor
                 etl_processor = ETLProcessor()
@@ -334,8 +341,11 @@ class DataProcessorService:
                 # Conectar a las bases de datos
                 etl_processor.connect_databases()
                 
-                # Extraer los eventos del mensaje de Kafka
-                eventos_data = event_data.get('data', {})
+                # Crear estructura de datos compatible con insertar_eventos_desde_scraper
+                eventos_data = {
+                    'eventos': events_list,
+                    'metadata': event_data.get('data', {}).get('metadata', {})
+                }
                 
                 # Insertar eventos en BD operacional
                 eventos_insertados = etl_processor.insertar_eventos_desde_scraper(eventos_data)
@@ -346,23 +356,28 @@ class DataProcessorService:
                 logger.info(f"✅ Eventos del scraper insertados: {eventos_insertados}")
                 return {
                     "eventos_insertados": eventos_insertados,
-                    "status": "completed"
+                    "status": "completed",
+                    "message": f"Se insertaron {eventos_insertados} eventos exitosamente"
                 }
                 
             except ImportError as e:
                 logger.warning(f"⚠️ No se pudo importar ETL para eventos: {e}")
                 return {
                     "eventos_insertados": 0,
-                    "status": "error",
-                    "note": "Módulo ETL no disponible"
+                    "status": "module_error",
+                    "error": "Módulo ETL no disponible",
+                    "details": str(e)
                 }
                 
         except Exception as e:
             logger.error(f"❌ Error insertando eventos del scraper: {e}")
+            import traceback
+            logger.error(f"❌ Traceback completo: {traceback.format_exc()}")
             return {
                 "eventos_insertados": 0,
                 "status": "error",
-                "error": str(e)
+                "error": str(e),
+                "error_type": type(e).__name__
             }
     
     def _publish_completion_events(self, etl_result: Dict[str, Any], scraper_events_result: Dict[str, Any], clustering_result: Dict[str, Any]):

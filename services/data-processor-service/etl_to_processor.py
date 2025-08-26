@@ -509,23 +509,70 @@ class ETLProcessor:
         
         for evento in eventos_data.get('eventos', []):
             try:
+                # Convertir fecha_scraping a timestamp si es string
+                fecha_scraping = evento.get('fecha_scraping')
+                if isinstance(fecha_scraping, str):
+                    from datetime import datetime
+                    try:
+                        fecha_scraping = datetime.fromisoformat(fecha_scraping.replace('Z', '+00:00'))
+                    except:
+                        fecha_scraping = datetime.now()
+                elif fecha_scraping is None:
+                    fecha_scraping = datetime.now()
+                
+                # Convertir horas a formato TIME si son strings
+                hora_inicio = evento.get('hora_inicio')
+                hora_fin = evento.get('hora_fin')
+                
+                if hora_inicio and isinstance(hora_inicio, str):
+                    # Asegurar formato HH:MM:SS
+                    if len(hora_inicio.split(':')) == 2:
+                        hora_inicio = hora_inicio + ':00'
+                
+                if hora_fin and isinstance(hora_fin, str):
+                    # Asegurar formato HH:MM:SS
+                    if len(hora_fin.split(':')) == 2:
+                        hora_fin = hora_fin + ':00'
+                
+                # Validar y limpiar coordenadas
+                latitud = evento.get('latitud')
+                longitud = evento.get('longitud')
+                
+                if latitud is not None:
+                    try:
+                        latitud = float(latitud)
+                        # Validar rango para Buenos Aires
+                        if not (-35.0 <= latitud <= -34.0):
+                            latitud = None
+                    except (ValueError, TypeError):
+                        latitud = None
+                
+                if longitud is not None:
+                    try:
+                        longitud = float(longitud)
+                        # Validar rango para Buenos Aires
+                        if not (-59.0 <= longitud <= -58.0):
+                            longitud = None
+                    except (ValueError, TypeError):
+                        longitud = None
+                
                 # Extraer solo los campos que van a la BD (sin campos extra)
                 evento_bd = {
-                    "nombre": evento.get('nombre', ''),
+                    "nombre": str(evento.get('nombre', ''))[:255],  # Limitar longitud
                     "descripcion": evento.get('descripcion', ''),
-                    "categoria_evento": evento.get('categoria_evento', ''),
-                    "tematica": evento.get('tematica', ''),
+                    "categoria_evento": str(evento.get('categoria_evento', ''))[:100],
+                    "tematica": str(evento.get('tematica', ''))[:100],
                     "direccion_evento": evento.get('direccion_evento', ''),
                     "ubicacion_especifica": evento.get('ubicacion_especifica', ''),
-                    "latitud": evento.get('latitud'),
-                    "longitud": evento.get('longitud'),
-                    "barrio": evento.get('barrio', ''),
-                    "dias_semana": evento.get('dias_semana', ''),
-                    "hora_inicio": evento.get('hora_inicio'),
-                    "hora_fin": evento.get('hora_fin'),
-                    "url_evento": evento.get('url_evento', ''),
-                    "fecha_scraping": evento.get('fecha_scraping'),
-                    "url_fuente": evento.get('url_fuente', '')
+                    "latitud": latitud,
+                    "longitud": longitud,
+                    "barrio": str(evento.get('barrio', ''))[:100],
+                    "dias_semana": str(evento.get('dias_semana', ''))[:7],  # Máximo 7 caracteres LMXJVSD
+                    "hora_inicio": hora_inicio,
+                    "hora_fin": hora_fin,
+                    "url_evento": str(evento.get('url_evento', ''))[:500],
+                    "fecha_scraping": fecha_scraping,
+                    "url_fuente": str(evento.get('url_fuente', '') or 'https://turismo.buenosaires.gob.ar/es/que-hacer-en-la-ciudad')[:500]
                 }
                 
                 # Debug: mostrar el primer evento
@@ -541,7 +588,9 @@ class ETLProcessor:
             except Exception as e:
                 errores += 1
                 logger.error(f"Error insertando evento {evento.get('nombre', 'Sin nombre')}: {e}")
-                logger.error(f"Datos del evento: {evento}")
+                logger.error(f"Tipo de error: {type(e).__name__}")
+                if count < 3:  # Solo mostrar detalles de los primeros errores
+                    logger.error(f"Datos del evento que falló: {evento}")
                 continue
         
         self.operational_conn.commit()
