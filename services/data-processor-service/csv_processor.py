@@ -206,22 +206,157 @@ class BarrioGeocoder:
         # Convertir a título y limpiar
         barrio_clean = barrio.strip().title()
         
-        # Mapeos específicos para Buenos Aires
+        # Mapeos específicos para Buenos Aires - Normalización a barrios oficiales
         barrio_mappings = {
+            # Microcentro/Centro -> San Nicolas
             'Microcentro': 'San Nicolas',
             'Centro': 'San Nicolas',
+            'San Nicolás': 'San Nicolas',
+            
+            # La Boca normalization
             'Casco Histórico': 'San Telmo',
+            'La Boca': 'La Boca',
+            'Boca': 'La Boca',
+            
+            # Puerto Madero
             'Puerto Madero Este': 'Puerto Madero',
             'Puerto Madero Oeste': 'Puerto Madero',
+            
+            # Recoleta area
             'Barrio Norte': 'Recoleta',
+            'La Isla': 'Recoleta',
+            'Barrio Parque': 'Recoleta',
+            
+            # Palermo and its subdivisions
             'Las Cañitas': 'Palermo',
             'Palermo Soho': 'Palermo',
             'Palermo Hollywood': 'Palermo',
+            'Palermo Viejo': 'Palermo',
+            'Palermo Chico': 'Palermo',
+            'Alto Palermo': 'Palermo',
+            'Palermo Norte': 'Palermo',
+            'Palermo Botánico': 'Palermo',
+            'Palermo Pacífico': 'Palermo',
+            'Palermo Botanico': 'Palermo',
+            'Palermo Pacifico': 'Palermo',
+            
+            # Villa Crespo
             'Villa Crespo': 'Villa Crespo',
-            'Once': 'Balvanera'
+            
+            # Once/Balvanera
+            'Once': 'Balvanera',
+            'Abasto': 'Balvanera',
+            
+            # Barracas and nearby areas
+            'Barracas': 'Barracas',
+            'Villa 21 -24 / Zavaleta': 'Barracas',
+            'Villa 21-24': 'Barracas',
+            'Zavaleta': 'Barracas',
+            
+            # Monserrat
+            'Monserrat': 'Monserrat',
+            'Montserrat': 'Monserrat',  # Corrección ortográfica
+            
+            # San Cristobal
+            'San Cristobal': 'San Cristobal',
+            'San Cristóbal': 'San Cristobal',
+            
+            # Villa names - MAPPING NON-OFFICIAL ONES TO OFFICIAL NEIGHBORHOODS
+            'Villa Del Parque': 'Villa Del Parque',
+            'Villa Devoto': 'Villa Devoto',
+            'Villa General Mitre': 'Villa Santa Rita',  # Mapped to adjacent official neighborhood
+            'Villa Gral. Mitre': 'Villa Santa Rita',    # Mapped to adjacent official neighborhood
+            'Villa Lugano': 'Villa Lugano',
+            'Villa Luro': 'Villa Luro',
+            'Villa Ortúzar': 'Villa Ortuzar',
+            'Villa Ortuzar': 'Villa Ortuzar',
+            'Villa Pueyrredón': 'Villa Pueyrredon',
+            'Villa Pueyrredon': 'Villa Pueyrredon',
+            'Villa Real': 'Monte Castro',              # Mapped to adjacent official neighborhood
+            'Villa Riachuelo': 'Villa Riachuelo',
+            'Villa Santa Rita': 'Villa Santa Rita',
+            'Villa Soldati': 'Villa Soldati',
+            'Villa Urquiza': 'Villa Urquiza',
+            'Monte Castro': 'Monte Castro',
+            
+            # Parque areas
+            'Parque Chacabuco': 'Parque Chacabuco',
+            'Parque Chas': 'Parque Chas',
+            'Parque Patricios': 'Parque Patricios',
+            'Parque Avellaneda': 'Parque Avellaneda',
+            
+            # La Paternal
+            'Paternal': 'Paternal',
+            'La Paternal': 'Paternal',
+            
+            # Velez Sarsfield
+            'Vélez Sársfield': 'Floresta',             # Mapped to adjacent official neighborhood
+            'Velez Sarsfield': 'Floresta',             # Mapped to adjacent official neighborhood
+            'Vélez Sarsfield': 'Floresta',             # Mapped to adjacent official neighborhood
+            
+            # Other neighborhoods
+            'Versalles': 'Versalles',
+            'Liniers': 'Liniers',
+            'Mataderos': 'Mataderos',
+            'Nueva Pompeya': 'Nueva Pompeya',
+            'Pompeya': 'Nueva Pompeya',
+            
+            # Nuñez with encoding fixes
+            'Núñez': 'Nuñez',
+            'Nuñez': 'Nuñez',
+            'Nuãâ±ez': 'Nuñez',
+            
+            # Other traditional neighborhoods
+            'Saavedra': 'Saavedra',
+            'Coghlan': 'Coghlan',
+            'Colegiales': 'Colegiales',
+            'Constitución': 'Constitucion',
+            'Constitucion': 'Constitucion',
+            'Chacarita': 'Chacarita',
+            'Caballito': 'Caballito',
+            'Boedo': 'Boedo',
+            
+            # Belgrano and its parts
+            'Belgrano': 'Belgrano',
+            'Belgrano C': 'Belgrano',
+            'Belgrano R': 'Belgrano',
+            'Belgrano Chico': 'Belgrano',
+            'Bajo Belgrano': 'Belgrano',
+            'Barrio Chino': 'Belgrano',
+            
+            'Almagro': 'Almagro',
+            'Agronomía': 'Agronomia',
+            'Agronomia': 'Agronomia',
+            'Floresta': 'Floresta',
+            'Flores': 'Flores',
+            
+            # Obscure or non-official areas - map to closest official neighborhood
+            'Barrio Mariano Castex': 'Retiro',  # Most likely location
+            'Barrio Ypf': 'Villa Riachuelo',    # Most likely location
+            'La Containera': 'La Boca',         # Most likely location
+            
+            # Other main neighborhoods
+            'Retiro': 'Retiro',
+            'San Telmo': 'San Telmo',
+            'San Nicolas': 'San Nicolas'
         }
         
-        return barrio_mappings.get(barrio_clean, barrio_clean)
+        # Obtener el barrio normalizado o mantener el original si no está en el mapeo
+        normalized_barrio = barrio_mappings.get(barrio_clean, barrio_clean)
+        
+        # Asegurar formato Title case para todos los barrios (primera letra de cada palabra mayúscula)
+        # pero mantener excepciones como "Del" en minúscula después de la primera palabra
+        words = normalized_barrio.split()
+        if len(words) > 0:
+            result = [words[0].capitalize()]
+            for word in words[1:]:
+                if word.lower() in ['del', 'de', 'la', 'las', 'los', 'y']:
+                    result.append(word.lower())
+                else:
+                    result.append(word.capitalize())
+            return ' '.join(result)
+        else:
+            return normalized_barrio.capitalize()
     
     def get_stats(self) -> Dict:
         """Obtener estadísticas del geocoder"""
@@ -489,9 +624,13 @@ class CSVProcessor:
                     logger.info(f"[OK] Barrio calculado: '{poi_data['nombre']}' -> {barrio_calculado}")
                 else:
                     logger.debug(f"[WARN] No se pudo calcular barrio para '{poi_data.get('nombre', 'Unknown')}'")
-                    poi_data['barrio'] = 'Sin especificar'
+                    poi_data['barrio'] = 'Sin Especificar'
             except (ValueError, TypeError) as e:
                 logger.warning(f"Error convirtiendo coordenadas para geocoding: {e}")
+        
+        # Normalizar barrio siempre para asegurar consistencia
+        if poi_data.get('barrio'):
+            poi_data['barrio'] = self.geocoder._clean_barrio_name(poi_data['barrio'])
         
         insert_query = """
         INSERT INTO pois (
