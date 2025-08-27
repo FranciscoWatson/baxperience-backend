@@ -82,17 +82,135 @@ class RecommendationService:
     def get_user_preferences(self, user_id: int) -> Dict:
         """
         Obtener preferencias del usuario desde BD Operacional
-        En el futuro esto vendría del API Gateway
+        Lee las preferencias reales de la base de datos
         """
-        # Simulación: en realidad consultaría BD Operacional
-        return {
-            'categorias_preferidas': ['Museos', 'Gastronomía'],
-            'zona_preferida': 'Palermo',
-            'presupuesto': 'medio',
-            'tipo_compania': 'pareja',
-            'duracion_preferida': 8,  # horas
-            'actividades_evitar': ['Entretenimiento']
-        }
+        # Asegurar conexión a BD Operacional
+        if not hasattr(self, 'operational_conn') or not self.operational_conn:
+            try:
+                self.operational_conn = psycopg2.connect(**DatabaseConfig.OPERATIONAL_DB)
+                logger.info("Conectado a BD Operacional para obtener preferencias")
+            except Exception as e:
+                logger.error(f"Error conectando a BD Operacional: {e}")
+                # Retornar preferencias por defecto si no se puede conectar
+                return {
+                    'categorias_preferidas': ['Museos', 'Gastronomía'],
+                    'zona_preferida': 'Palermo',
+                    'presupuesto': 'medio',
+                    'tipo_compania': 'pareja',
+                    'duracion_preferida': 8,  # horas
+                    'actividades_evitar': ['Entretenimiento']
+                }
+        
+        try:
+            cursor = self.operational_conn.cursor()
+            
+            # Obtener información básica del usuario
+            cursor.execute("""
+                SELECT nombre, tipo_viajero, duracion_viaje_promedio, ciudad_origen
+                FROM usuarios 
+                WHERE id = %s
+            """, (user_id,))
+            
+            user_info = cursor.fetchone()
+            if not user_info:
+                logger.warning(f"Usuario {user_id} no encontrado, usando preferencias por defecto")
+                return {
+                    'categorias_preferidas': ['Museos', 'Gastronomía'],
+                    'zona_preferida': 'Palermo',
+                    'presupuesto': 'medio',
+                    'tipo_compania': 'pareja',
+                    'duracion_preferida': 8,
+                    'actividades_evitar': ['Entretenimiento']
+                }
+            
+            # Obtener preferencias de categorías del usuario
+            cursor.execute("""
+                SELECT c.nombre, p.le_gusta
+                FROM preferencias_usuario p 
+                JOIN categorias c ON p.categoria_id = c.id
+                WHERE p.usuario_id = %s
+            """, (user_id,))
+            
+            preferencias_raw = cursor.fetchall()
+            
+            # Procesar preferencias
+            categorias_preferidas = []
+            actividades_evitar = []
+            
+            for categoria, le_gusta in preferencias_raw:
+                if le_gusta:
+                    categorias_preferidas.append(categoria)
+                else:
+                    actividades_evitar.append(categoria)
+            
+            # Si no hay preferencias específicas, usar defaults
+            if not categorias_preferidas:
+                categorias_preferidas = ['Museos', 'Gastronomía']
+            
+            # Mapear tipo_viajero a zona preferida y presupuesto
+            zona_preferida = 'Palermo'  # Default
+            presupuesto = 'medio'       # Default
+            tipo_compania = 'solo'      # Default
+            
+            if user_info[1]:  # tipo_viajero
+                tipo_lower = user_info[1].lower()
+                
+                # Mapear zona según tipo de viajero
+                if 'cultural' in tipo_lower:
+                    zona_preferida = 'San Telmo'
+                elif 'foodie' in tipo_lower or 'gastrónomo' in tipo_lower:
+                    zona_preferida = 'Puerto Madero'
+                elif 'aventurer' in tipo_lower:
+                    zona_preferida = 'La Boca'
+                elif 'nocturno' in tipo_lower:
+                    zona_preferida = 'Palermo'
+                elif 'fotógrafo' in tipo_lower:
+                    zona_preferida = 'Puerto Madero'
+                else:
+                    zona_preferida = 'Palermo'  # Default para urbano, etc.
+                
+                # Mapear presupuesto según tipo
+                if 'low-cost' in tipo_lower:
+                    presupuesto = 'bajo'
+                elif 'foodie' in tipo_lower or 'gastrónomo' in tipo_lower:
+                    presupuesto = 'alto'
+                else:
+                    presupuesto = 'medio'
+                
+                # Mapear tipo de compañía
+                if 'pareja' in tipo_lower:
+                    tipo_compania = 'pareja'
+                elif 'solo' in tipo_lower:
+                    tipo_compania = 'solo'
+                else:
+                    tipo_compania = 'solo'  # Default
+            
+            # Duración preferida desde BD o default
+            duracion_preferida = user_info[2] if user_info[2] and user_info[2] > 0 else 8
+            
+            resultado = {
+                'categorias_preferidas': categorias_preferidas,
+                'zona_preferida': zona_preferida,
+                'presupuesto': presupuesto,
+                'tipo_compania': tipo_compania,
+                'duracion_preferida': duracion_preferida,
+                'actividades_evitar': actividades_evitar
+            }
+            
+            logger.info(f"Preferencias obtenidas para usuario {user_id}: {resultado}")
+            return resultado
+            
+        except Exception as e:
+            logger.error(f"Error obteniendo preferencias del usuario {user_id}: {e}")
+            # Retornar preferencias por defecto en caso de error
+            return {
+                'categorias_preferidas': ['Museos', 'Gastronomía'],
+                'zona_preferida': 'Palermo',
+                'presupuesto': 'medio',
+                'tipo_compania': 'pareja',
+                'duracion_preferida': 8,
+                'actividades_evitar': ['Entretenimiento']
+            }
     
     def filter_pois_and_events_by_clusters(self, user_prefs: Dict) -> Dict[str, List[Dict]]:
         """
@@ -818,8 +936,12 @@ class RecommendationService:
             # 1. Obtener preferencias del usuario
             user_prefs = self.get_user_preferences(user_id)
             
-            # Combinar con request específico
-            user_prefs.update(request_data)
+            # Combinar con request específico (solo valores no None)
+            for key, value in request_data.items():
+                if value is not None:
+                    user_prefs[key] = value
+            
+            logger.info(f"Preferencias finales utilizadas: {user_prefs}")
             
             # 2. Filtrar POIs y eventos usando clusters
             filtered_data = self.filter_pois_and_events_by_clusters(user_prefs)
