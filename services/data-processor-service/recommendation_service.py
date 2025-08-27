@@ -266,9 +266,9 @@ class RecommendationService:
                     
                     # LÓGICA BALANCEADA: Más POIs para categorías no-gastronómicas
                     if categoria == 'Gastronomía':
-                        limit_categoria = 40  # Limitar gastronomía
+                        limit_categoria = 20  # Reducido de 40 a 20 para limitar gastronomía
                     else:
-                        limit_categoria = 60  # Priorizar cultural/entretenimiento
+                        limit_categoria = 80  # Aumentado de 60 a 80 para priorizar cultural/entretenimiento
                     
                     pois_query += f"""
                     ORDER BY 
@@ -346,37 +346,70 @@ class RecommendationService:
             WHERE activo = true 
             """
             
-            # Filtros más flexibles para eventos
-            # No filtrar por fecha para tener más eventos disponibles para testing
-            # En producción se puede activar: AND fecha_inicio >= CURRENT_DATE - INTERVAL '7 days'
+            # Inicializar lista de parámetros
+            params = []
             
+            # MEJORADO: Filtrar eventos por fecha del itinerario
+            # Solo incluir eventos que estén activos en la fecha de visita
+            if fecha_visita:
+                try:
+                    # Convertir fecha_visita a formato de fecha
+                    if isinstance(fecha_visita, str):
+                        from datetime import datetime as dt
+                        fecha_visita_dt = dt.strptime(fecha_visita, '%Y-%m-%d').date()
+                    else:
+                        fecha_visita_dt = fecha_visita
+                    
+                    # Filtrar eventos donde la fecha de visita esté entre fecha_inicio y fecha_fin
+                    eventos_query += """
+                    AND (
+                        (fecha_inicio IS NOT NULL AND fecha_inicio <= %s)
+                        AND 
+                        (fecha_fin IS NULL OR fecha_fin >= %s)
+                    )
+                    """
+                    # Agregar parámetros para la fecha
+                    params.extend([fecha_visita_dt, fecha_visita_dt])
+                    
+                    logger.info(f"Filtrando eventos para fecha: {fecha_visita_dt}")
+                except Exception as e:
+                    logger.warning(f"Error procesando fecha de visita {fecha_visita}: {e}")
+                    # Si hay error, no filtrar por fecha
+                    pass
+            
+            # MEJORADO: Incluir eventos con categoría "Evento" (que es la categoría real)
             # Filtrar eventos por categorías si están especificadas
             if categorias:
                 # Mapear categorías de usuario a categorías de eventos
                 categorias_eventos = []
                 for cat in categorias:
-                    if cat in ['Entretenimiento', 'Museos', 'Gastronomía']:
-                        categorias_eventos.append('Entretenimiento')  # La mayoría son entretenimiento
-                    elif cat in ['Lugares Históricos', 'Monumentos']:
-                        categorias_eventos.append('Entretenimiento')  # También pueden incluir eventos culturales
+                    if cat in ['Entretenimiento', 'Museos', 'Gastronomía', 'Lugares Históricos', 'Monumentos']:
+                        # Todos estos tipos pueden tener eventos asociados
+                        categorias_eventos.append('Evento')  # La categoría real es "Evento"
                 
                 if categorias_eventos:
-                    categorias_sql = "', '".join(set(categorias_eventos))
-                    eventos_query += f" AND categoria_evento IN ('{categorias_sql}')"
+                    # Incluir eventos de categoría "Evento" que coincidan con las preferencias
+                    eventos_query += " AND categoria_evento = 'Evento'"
+            else:
+                # Si no hay categorías específicas, incluir todos los eventos
+                eventos_query += " AND categoria_evento = 'Evento'"
             
             # Filtrar eventos por zona
             if zona and zona.strip():
-                eventos_query += f" AND (barrio ILIKE '%{zona}%' OR barrio IS NULL)"
+                eventos_query += " AND (barrio ILIKE %s OR barrio IS NULL)"
+                params.append(f"%{zona}%")
             
             eventos_query += """
             ORDER BY 
                 CASE WHEN fecha_inicio IS NOT NULL THEN 0 ELSE 1 END,
                 fecha_inicio ASC, 
                 RANDOM()
-            LIMIT 100
+            LIMIT 50
             """
             
-            cursor.execute(eventos_query)
+            # Ejecutar query con parámetros
+            cursor.execute(eventos_query, params)
+            
             eventos_result = cursor.fetchall()
             
             # Procesar eventos para que tengan el formato esperado
@@ -496,6 +529,7 @@ class RecommendationService:
     def calculate_event_scores(self, eventos: List[Dict], user_prefs: Dict) -> List[Dict]:
         """
         Calcular scores personalizados para eventos
+        MEJORADO: Mayor prioridad para eventos y mejor scoring
         """
         logger.info("Calculando scores para eventos...")
         
@@ -508,31 +542,31 @@ class RecommendationService:
             score = 0.0
             
             # Score base más alto para eventos (son únicos y temporales)
-            score += 0.8
+            score += 1.0  # Aumentado de 0.8 a 1.0 para dar más prioridad
             
             # Bonus por ser gratuito (la mayoría de eventos lo son)
             if evento.get('es_gratuito'):
-                score += 0.15
+                score += 0.2  # Aumentado de 0.15
             
             # Bonus por zona preferida
             zona_pref = user_prefs.get('zona_preferida', '')
             barrio_evento = evento.get('barrio', '') or ''
             if zona_pref and zona_pref.lower() in barrio_evento.lower():
-                score += 0.2
+                score += 0.3  # Aumentado de 0.2
             
             # Bonus por duración del evento (eventos de varios días son más valiosos)
             duracion_dias = evento.get('duracion_dias', 1)
             if duracion_dias and duracion_dias > 1:
-                score += 0.1
+                score += 0.15  # Aumentado de 0.1
             
             # Bonus por presupuesto bajo (eventos suelen ser gratuitos)
             if user_prefs.get('presupuesto') == 'bajo':
-                score += 0.25
+                score += 0.3  # Aumentado de 0.25
             
             # Bonus por categoría cultural para ciertos tipos de compañía
             categoria_evento = evento.get('categoria', '').lower()
             if user_prefs.get('tipo_compania') == 'familia' and 'cultural' in categoria_evento:
-                score += 0.15
+                score += 0.2  # Aumentado de 0.15
             
             # Bonus por proximidad temporal (eventos más cercanos son más relevantes)
             fecha_inicio = evento.get('fecha_inicio')
@@ -551,14 +585,18 @@ class RecommendationService:
                     
                     dias_diferencia = abs((fecha_evento - fecha_visita).days)
                     if dias_diferencia <= 3:
-                        score += 0.2  # Muy cercano
+                        score += 0.3  # Aumentado de 0.2 - Muy cercano
                     elif dias_diferencia <= 7:
-                        score += 0.1  # Cercano
+                        score += 0.15  # Aumentado de 0.1 - Cercano
                 except:
                     pass  # Si hay error, no aplicar bonus temporal
             
+            # Bonus por tener URL (eventos con más información son más confiables)
+            if evento.get('url_evento'):
+                score += 0.1
+            
             # Garantizar score mínimo
-            score = max(score, 0.5)  # Eventos tienen score mínimo más alto
+            score = max(score, 0.8)  # Aumentado de 0.5 - Eventos tienen score mínimo más alto
             
             evento['score_personalizado'] = round(score, 3)
             evento['item_type'] = 'evento'  # Asegurar que esté marcado
@@ -570,11 +608,12 @@ class RecommendationService:
         logger.info(f"Scores calculados para {len(scored_events)} eventos")
         return scored_events
     
-    def optimize_route_with_events(self, items_selected: List[Dict], duracion_horas: int) -> List[Dict]:
+    def optimize_route_with_events(self, items_selected: List[Dict], duracion_horas: int, hora_inicio: str = '10:00') -> List[Dict]:
         """
         Optimizar ruta incluyendo eventos con consideraciones temporales y geográficas
+        MEJORADO: Considera horario de inicio real del itinerario
         """
-        logger.info("Optimizando ruta con POIs y eventos...")
+        logger.info(f"Optimizando ruta con POIs y eventos para {duracion_horas}h desde {hora_inicio}...")
         
         if not items_selected:
             return []
@@ -584,6 +623,12 @@ class RecommendationService:
         eventos = [item for item in items_selected if item.get('item_type') == 'evento']
         
         logger.info(f"Optimizando: {len(pois)} POIs y {len(eventos)} eventos")
+        
+        # Convertir hora de inicio a entero
+        try:
+            hora_inicio_int = int(hora_inicio.split(':')[0])
+        except (ValueError, AttributeError):
+            hora_inicio_int = 10  # Default 10:00 AM
         
         # Crear itinerario inicial
         itinerario = []
@@ -600,9 +645,11 @@ class RecommendationService:
             # Usar horario real del evento si está disponible
             hora_evento = self._extract_event_time(evento)
             if hora_evento is None:
-                hora_evento = 10 + (eventos_insertados * 3)  # Distribuir si no hay horario
+                # Distribuir eventos a lo largo del día
+                hora_evento = hora_inicio_int + (eventos_insertados * 2)  # Cada 2 horas
             
-            if hora_evento >= 18:  # No después de las 18
+            # Verificar que el evento no sea muy tarde
+            if hora_evento >= 20:  # No después de las 8 PM
                 continue
                 
             actividad = self._create_activity_from_item(evento, hora_evento, 120, eventos_insertados + 1)
@@ -613,7 +660,9 @@ class RecommendationService:
         pois_optimizados = self._optimize_geographic_route(pois, max_actividades - eventos_insertados)
         
         # PASO 3: Intercalar eventos y POIs optimizando horarios
-        itinerario_final = self._merge_events_and_pois(eventos_programados, pois_optimizados, duracion_horas)
+        itinerario_final = self._merge_events_and_pois_improved(
+            eventos_programados, pois_optimizados, duracion_horas, hora_inicio_int
+        )
         
         logger.info(f"Ruta optimizada: {len(itinerario_final)} actividades ({eventos_insertados} eventos)")
         return itinerario_final
@@ -773,6 +822,52 @@ class RecommendationService:
         
         return todas_actividades
     
+    def _merge_events_and_pois_improved(self, eventos: List[Dict], pois: List[Dict], duracion_horas: int, hora_inicio_int: int) -> List[Dict]:
+        """
+        Combinar eventos y POIs en un itinerario temporal coherente
+        MEJORADO: Considera horario de inicio real del itinerario
+        """
+        itinerario_final = []
+        
+        # Convertir POIs a actividades con horarios
+        actividades_pois = []
+        hora_actual = hora_inicio_int  # Empezar a la hora de inicio del itinerario
+        
+        for i, poi in enumerate(pois):
+            # Determinar duración según categoría
+            if poi.get('categoria') == 'Gastronomía':
+                duracion = 90  # 1.5 horas para comer
+                # Programar comidas en horarios apropiados
+                if len(actividades_pois) == 0:
+                    hora_actual = 12  # Primera comida al mediodía
+                elif len(actividades_pois) >= 3:
+                    hora_actual = max(hora_actual, 19)  # Cena
+            else:
+                duracion = 120  # 2 horas para visitas
+            
+            # Evitar conflictos con eventos ya programados
+            while self._hour_conflicts_with_events(hora_actual, duracion, eventos):
+                hora_actual += 1
+                if hora_actual >= 20:  # No más allá de las 8 PM
+                    break
+            
+            if hora_actual < 20:
+                actividad = self._create_activity_from_item(poi, hora_actual, duracion, i + 1)
+                actividades_pois.append(actividad)
+                hora_actual += (duracion // 60) + 1  # +1 hora de buffer
+        
+        # Combinar eventos y POIs
+        todas_actividades = eventos + actividades_pois
+        
+        # Ordenar por horario
+        todas_actividades.sort(key=lambda x: x['horario_inicio'])
+        
+        # Reordenar números de orden
+        for i, actividad in enumerate(todas_actividades):
+            actividad['orden_visita'] = i + 1
+        
+        return todas_actividades
+    
     def _hour_conflicts_with_events(self, hora: int, duracion_min: int, eventos: List[Dict]) -> bool:
         """
         Verificar si una hora conflicta con eventos programados
@@ -792,18 +887,31 @@ class RecommendationService:
     def _select_balanced_items(self, pois_scored: List[Dict], eventos_scored: List[Dict], user_prefs: Dict) -> List[Dict]:
         """
         Seleccionar items balanceando categorías preferidas y eventos
+        MEJORADO: Considera horario de inicio y balance realista
         """
         logger.info("Seleccionando items balanceados...")
         
         categorias_preferidas = user_prefs.get('categorias_preferidas', [])
-        duracion_horas = user_prefs.get('duracion_preferida', 8)
+        duracion_horas = user_prefs.get('duracion_horas', user_prefs.get('duracion_preferida', 8))
+        hora_inicio = user_prefs.get('hora_inicio', '10:00')
         
-        # Calcular distribución objetivo
-        total_items = min(duracion_horas // 2 + 2, 12)  # Entre 4-12 items
-        max_eventos = min(3, max(1, total_items // 4))  # 25% máximo eventos, mínimo 1
+        # Calcular distribución objetivo más realista
+        # Para 6 horas: 3-4 actividades principales + 1-2 eventos
+        # Para 4 horas: 2-3 actividades principales + 1 evento
+        # Para 8 horas: 4-5 actividades principales + 2-3 eventos
+        if duracion_horas <= 4:
+            total_items = 3
+            max_eventos = 1
+        elif duracion_horas <= 6:
+            total_items = 4
+            max_eventos = 1
+        else:  # 8+ horas
+            total_items = 5
+            max_eventos = 2
+        
         items_pois = total_items - max_eventos
         
-        logger.info(f"Objetivo: {total_items} items total ({items_pois} POIs + {max_eventos} eventos)")
+        logger.info(f"Objetivo: {total_items} items total ({items_pois} POIs + {max_eventos} eventos) para {duracion_horas}h")
         
         items_seleccionados = []
         
@@ -816,8 +924,8 @@ class RecommendationService:
         # PASO 2: Seleccionar POIs balanceando categorías preferidas
         if categorias_preferidas and len(categorias_preferidas) > 1:
             # Múltiples categorías: distribuir equitativamente
-            pois_por_categoria = self._distribute_pois_by_category(
-                pois_scored, categorias_preferidas, items_pois
+            pois_por_categoria = self._distribute_pois_by_category_improved(
+                pois_scored, categorias_preferidas, items_pois, duracion_horas
             )
             items_seleccionados.extend(pois_por_categoria)
         else:
@@ -828,9 +936,10 @@ class RecommendationService:
         
         return items_seleccionados
     
-    def _distribute_pois_by_category(self, pois_scored: List[Dict], categorias_preferidas: List[str], total_pois: int) -> List[Dict]:
+    def _distribute_pois_by_category_improved(self, pois_scored: List[Dict], categorias_preferidas: List[str], total_pois: int, duracion_horas: int) -> List[Dict]:
         """
         Distribuir POIs equitativamente entre categorías preferidas
+        MEJORADO: Considera duración y evita desbalance gastronómico
         """
         # Agrupar POIs por categoría
         pois_por_categoria = {}
@@ -846,18 +955,38 @@ class RecommendationService:
             # Si no hay POIs de las categorías preferidas, usar todos
             return pois_scored[:total_pois]
         
-        pois_por_cat = total_pois // len(categorias_disponibles)
-        pois_extra = total_pois % len(categorias_disponibles)
-        
+        # NUEVA LÓGICA: Distribución más inteligente
         pois_seleccionados = []
         
-        for i, categoria in enumerate(categorias_disponibles):
-            # Asignar POIs base + extras a las primeras categorías
-            cantidad = pois_por_cat + (1 if i < pois_extra else 0)
-            categoria_pois = pois_por_categoria[categoria][:cantidad]
-            pois_seleccionados.extend(categoria_pois)
+        if len(categorias_disponibles) == 2:
+            # Dos categorías: distribuir según duración
+            if duracion_horas <= 4:
+                # Para 4 horas: 1-2 por categoría
+                cat1, cat2 = categorias_disponibles[0], categorias_disponibles[1]
+                pois_cat1 = min(2, len(pois_por_categoria[cat1]))
+                pois_cat2 = total_pois - pois_cat1
+                
+                pois_seleccionados.extend(pois_por_categoria[cat1][:pois_cat1])
+                pois_seleccionados.extend(pois_por_categoria[cat2][:pois_cat2])
+                
+            else:
+                # Para 6+ horas: distribución más equilibrada
+                pois_por_cat = total_pois // len(categorias_disponibles)
+                pois_extra = total_pois % len(categorias_disponibles)
+                
+                for i, categoria in enumerate(categorias_disponibles):
+                    cantidad = pois_por_cat + (1 if i < pois_extra else 0)
+                    categoria_pois = pois_por_categoria[categoria][:cantidad]
+                    pois_seleccionados.extend(categoria_pois)
+        else:
+            # Una categoría o más de 2: distribución estándar
+            pois_por_cat = total_pois // len(categorias_disponibles)
+            pois_extra = total_pois % len(categorias_disponibles)
             
-            logger.info(f"Categoría '{categoria}': {len(categoria_pois)} POIs seleccionados")
+            for i, categoria in enumerate(categorias_disponibles):
+                cantidad = pois_por_cat + (1 if i < pois_extra else 0)
+                categoria_pois = pois_por_categoria[categoria][:cantidad]
+                pois_seleccionados.extend(categoria_pois)
         
         # Si no llegamos al total, completar con mejores POIs restantes
         if len(pois_seleccionados) < total_pois:
@@ -966,7 +1095,12 @@ class RecommendationService:
             )
             
             # 6. Optimizar ruta
-            actividades = self.optimize_route_with_events(items_seleccionados, user_prefs.get('duracion_preferida', 8))
+            hora_inicio = user_prefs.get('hora_inicio', '10:00')
+            actividades = self.optimize_route_with_events(
+                items_seleccionados, 
+                user_prefs.get('duracion_horas', user_prefs.get('duracion_preferida', 8)),
+                hora_inicio
+            )
             
             if not actividades:
                 return {
