@@ -34,7 +34,11 @@ wheel>=0.37.0
 kafka-python==2.0.2
 confluent-kafka==2.3.0
 
-# FastAPI for service endpoints
+# Web framework for API endpoints
+flask>=2.3.0
+flask-cors>=4.0.0
+
+# FastAPI for service endpoints (alternate option)
 fastapi==0.104.1
 uvicorn==0.24.0
 pydantic>=2.0.0

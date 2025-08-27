@@ -176,6 +176,7 @@ class DataProcessorService:
         try:
             self.consumer = KafkaConsumer(
                 'scraper-events',
+                'itinerary-requests',  # Nuevo tópico para solicitudes de itinerarios
                 bootstrap_servers=self.kafka_bootstrap_servers,
                 value_deserializer=lambda m: json.loads(m.decode('utf-8')),
                 group_id='data-processor-service',
@@ -197,6 +198,9 @@ class DataProcessorService:
                     # Procesar evento del scraper
                     if event_data.get('event_type') == 'scraper_data':
                         self._process_scraper_event(event_data)
+                    # Procesar solicitud de itinerario
+                    elif event_data.get('event_type') == 'itinerary_request':
+                        self._process_itinerary_request(event_data)
                         
                 except Exception as e:
                     logger.error(f"❌ Error procesando evento: {e}")
@@ -234,6 +238,136 @@ class DataProcessorService:
             logger.error(f"❌ Error en procesamiento: {e}")
             import traceback
             logger.error(f"❌ Traceback: {traceback.format_exc()}")
+    
+    def _process_itinerary_request(self, event_data: Dict[str, Any]):
+        """Procesar solicitud de generación de itinerario"""
+        logger.info("🗺️ Procesando solicitud de itinerario...")
+        
+        try:
+            # Extraer datos de la solicitud
+            request_id = event_data.get('request_id', f"req_{int(datetime.now().timestamp())}")
+            user_id = event_data.get('user_id')
+            request_data = event_data.get('request_data', {})
+            
+            logger.info(f"📋 Solicitud de itinerario - Request ID: {request_id}, Usuario: {user_id}")
+            
+            # Validar datos requeridos
+            if not user_id:
+                error_msg = "ID de usuario requerido"
+                logger.error(f"❌ {error_msg}")
+                self._publish_itinerary_error(request_id, error_msg)
+                return
+            
+            # Importar y usar el servicio de recomendaciones
+            try:
+                from recommendation_service import RecommendationService
+                
+                # Crear instancia del servicio
+                rec_service = RecommendationService()
+                rec_service.connect_database()
+                rec_service.connect_operational_database()
+                
+                logger.info(f"🚀 Generando itinerario para usuario {user_id}...")
+                
+                # Generar itinerario
+                start_time = datetime.now()
+                resultado = rec_service.generate_itinerary(user_id, request_data)
+                end_time = datetime.now()
+                
+                processing_time = (end_time - start_time).total_seconds()
+                
+                # Verificar resultado
+                if 'error' in resultado:
+                    logger.warning(f"⚠️ Error generando itinerario: {resultado['error']}")
+                    self._publish_itinerary_error(request_id, resultado['error'], resultado.get('sugerencias', []))
+                else:
+                    logger.info(f"✅ Itinerario generado exitosamente: {resultado.get('itinerario_id')}")
+                    
+                    # Agregar metadata del procesamiento
+                    resultado['processing_metadata'] = {
+                        'request_id': request_id,
+                        'processing_time_seconds': processing_time,
+                        'processed_at': end_time.isoformat(),
+                        'service_version': '1.0.0'
+                    }
+                    
+                    # Publicar resultado exitoso
+                    self._publish_itinerary_success(request_id, resultado)
+                
+                # Limpiar conexiones
+                rec_service.disconnect_database()
+                
+            except ImportError as e:
+                error_msg = f"Servicio de recomendaciones no disponible: {e}"
+                logger.error(f"❌ {error_msg}")
+                self._publish_itinerary_error(request_id, error_msg)
+                
+            except Exception as e:
+                error_msg = f"Error interno generando itinerario: {str(e)}"
+                logger.error(f"❌ {error_msg}")
+                import traceback
+                logger.error(f"❌ Traceback: {traceback.format_exc()}")
+                self._publish_itinerary_error(request_id, error_msg)
+                
+        except Exception as e:
+            logger.error(f"❌ Error procesando solicitud de itinerario: {e}")
+            import traceback
+            logger.error(f"❌ Traceback: {traceback.format_exc()}")
+    
+    def _publish_itinerary_success(self, request_id: str, itinerary_data: Dict[str, Any]):
+        """Publicar resultado exitoso de itinerario"""
+        try:
+            # Función para limpiar datos para JSON
+            def clean_for_json(obj):
+                if isinstance(obj, dict):
+                    return {k: clean_for_json(v) for k, v in obj.items() if k != 'dataframe'}
+                elif isinstance(obj, list):
+                    return [clean_for_json(item) for item in obj]
+                elif isinstance(obj, Decimal):
+                    return float(obj)
+                elif hasattr(obj, 'dtype'):  # numpy/pandas types
+                    return float(obj) if hasattr(obj, 'item') else str(obj)
+                elif hasattr(obj, 'quantize'):  # Decimal objects
+                    return float(obj)
+                else:
+                    return obj
+            
+            success_event = {
+                "event_type": "itinerary_generated",
+                "status": "success",
+                "request_id": request_id,
+                "timestamp": datetime.now().isoformat(),
+                "data": clean_for_json(itinerary_data)
+            }
+            
+            future = self.producer.send('itinerary-responses', key=request_id, value=success_event)
+            future.get()
+            logger.info(f"📤 Itinerario exitoso publicado - Request ID: {request_id}")
+            
+        except Exception as e:
+            logger.error(f"❌ Error publicando itinerario exitoso: {e}")
+    
+    def _publish_itinerary_error(self, request_id: str, error_message: str, suggestions: list = None):
+        """Publicar error de generación de itinerario"""
+        try:
+            error_event = {
+                "event_type": "itinerary_error",
+                "status": "error",
+                "request_id": request_id,
+                "timestamp": datetime.now().isoformat(),
+                "error": {
+                    "message": error_message,
+                    "suggestions": suggestions or [],
+                    "error_code": "ITINERARY_GENERATION_FAILED"
+                }
+            }
+            
+            future = self.producer.send('itinerary-responses', key=request_id, value=error_event)
+            future.get()
+            logger.info(f"📤 Error de itinerario publicado - Request ID: {request_id}")
+            
+        except Exception as e:
+            logger.error(f"❌ Error publicando error de itinerario: {e}")
     
     def _run_etl(self, event_data: Dict[str, Any]) -> Dict[str, Any]:
         """Ejecutar ETL"""
