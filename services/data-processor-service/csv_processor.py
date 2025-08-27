@@ -20,14 +20,24 @@ import sys
 from datetime import datetime
 import hashlib
 import logging
+import requests
+import time
 from typing import Dict, List, Optional, Tuple
+import time
+from geopy.geocoders import Nominatim
+try:
+    from geopy.extra.rate_limiter import RateLimiter
+except ImportError:
+    # Fallback para versiones más nuevas de geopy
+    from geopy import RateLimiter
+import requests
 
 # Configurar logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('csv_processor.log'),
+        logging.FileHandler('csv_processor.log', encoding='utf-8'),
         logging.StreamHandler(sys.stdout)
     ]
 )
@@ -54,6 +64,289 @@ class DatabaseConfig:
         'password': os.getenv('PROCESSOR_DB_PASSWORD', 'admin')
     }
 
+class BarrioGeocoder:
+    """
+    Servicio para obtener barrios de Buenos Aires basándose en coordenadas
+    Usa APIs públicas para geocodificación inversa
+    """
+    
+    def __init__(self):
+        self.cache = {}  # Cache para evitar consultas repetidas
+        self.session = requests.Session()
+        self.session.headers.update({
+            'User-Agent': 'BAXperience/1.0 (Tourism Recommendation System)'
+        })
+        self.rate_limit_delay = 0.1  # 100ms entre requests
+        self.last_request_time = 0
+        
+    def _rate_limit(self):
+        """Aplicar rate limiting"""
+        current_time = time.time()
+        time_since_last = current_time - self.last_request_time
+        if time_since_last < self.rate_limit_delay:
+            time.sleep(self.rate_limit_delay - time_since_last)
+        self.last_request_time = time.time()
+    
+    def get_barrio_by_coordinates(self, lat: float, lng: float) -> Optional[str]:
+        """
+        Obtener barrio basándose en coordenadas usando API de geocodificación
+        """
+        if lat is None or lng is None:
+            return None
+            
+        # Crear clave para cache
+        cache_key = f"{lat:.6f},{lng:.6f}"
+        if cache_key in self.cache:
+            return self.cache[cache_key]
+        
+        # Rate limiting
+        self._rate_limit()
+        
+        try:
+            # Intentar con API de Buenos Aires Data (más específica)
+            barrio = self._get_barrio_from_ba_data(lat, lng)
+            
+            if not barrio:
+                # Fallback a Nominatim (OpenStreetMap)
+                barrio = self._get_barrio_from_nominatim(lat, lng)
+            
+            # Limpiar resultado
+            barrio_clean = self._clean_barrio_name(barrio) if barrio else None
+            
+            # Guardar en cache
+            self.cache[cache_key] = barrio_clean
+            
+            if barrio_clean:
+                logger.debug(f"Barrio encontrado para {lat},{lng}: {barrio_clean}")
+            
+            return barrio_clean
+            
+        except Exception as e:
+            logger.warning(f"Error obteniendo barrio para {lat},{lng}: {e}")
+            return None
+    
+    def _get_barrio_from_ba_data(self, lat: float, lng: float) -> Optional[str]:
+        """
+        Obtener barrio usando la API de Buenos Aires Data
+        """
+        try:
+            # API de Buenos Aires para obtener información por coordenadas
+            url = "https://servicios.usig.buenosaires.gob.ar/normalizar"
+            params = {
+                'lat': lat,
+                'lng': lng,
+                'format': 'json'
+            }
+            
+            response = self.session.get(url, params=params, timeout=5)
+            
+            if response.status_code == 200:
+                data = response.json()
+                
+                # Extraer barrio del resultado
+                if isinstance(data, dict):
+                    # Buscar en diferentes campos posibles
+                    barrio = (data.get('barrio') or 
+                             data.get('neighbourhood') or
+                             data.get('localidad') or
+                             data.get('partido'))
+                    
+                    if barrio and isinstance(barrio, str):
+                        return barrio.strip()
+                        
+        except Exception as e:
+            logger.debug(f"Error con API BA Data: {e}")
+            
+        return None
+    
+    def _get_barrio_from_nominatim(self, lat: float, lng: float) -> Optional[str]:
+        """
+        Obtener barrio usando Nominatim (OpenStreetMap) como fallback
+        """
+        try:
+            url = "https://nominatim.openstreetmap.org/reverse"
+            params = {
+                'lat': lat,
+                'lon': lng,
+                'format': 'json',
+                'addressdetails': 1,
+                'accept-language': 'es'
+            }
+            
+            response = self.session.get(url, params=params, timeout=5)
+            
+            if response.status_code == 200:
+                data = response.json()
+                
+                if 'address' in data:
+                    address = data['address']
+                    
+                    # Buscar barrio en diferentes campos
+                    barrio = (address.get('neighbourhood') or
+                             address.get('suburb') or
+                             address.get('quarter') or
+                             address.get('city_district') or
+                             address.get('district'))
+                    
+                    if barrio and isinstance(barrio, str):
+                        return barrio.strip()
+                        
+        except Exception as e:
+            logger.debug(f"Error con Nominatim: {e}")
+            
+        return None
+    
+    def _clean_barrio_name(self, barrio: str) -> str:
+        """
+        Limpiar y normalizar nombre de barrio
+        """
+        if not barrio:
+            return None
+            
+        # Convertir a título y limpiar
+        barrio_clean = barrio.strip().title()
+        
+        # Mapeos específicos para Buenos Aires
+        barrio_mappings = {
+            'Microcentro': 'San Nicolas',
+            'Centro': 'San Nicolas',
+            'Casco Histórico': 'San Telmo',
+            'Puerto Madero Este': 'Puerto Madero',
+            'Puerto Madero Oeste': 'Puerto Madero',
+            'Barrio Norte': 'Recoleta',
+            'Las Cañitas': 'Palermo',
+            'Palermo Soho': 'Palermo',
+            'Palermo Hollywood': 'Palermo',
+            'Villa Crespo': 'Villa Crespo',
+            'Once': 'Balvanera'
+        }
+        
+        return barrio_mappings.get(barrio_clean, barrio_clean)
+    
+    def get_stats(self) -> Dict:
+        """Obtener estadísticas del geocoder"""
+        return {
+            'cache_size': len(self.cache),
+            'cached_barrios': list(set(v for v in self.cache.values() if v))
+        }
+
+class GeocodingService:
+    """Servicio de geocoding reverso para obtener barrios desde coordenadas"""
+    
+    def __init__(self):
+        # Configurar Nominatim con rate limiting
+        self.geolocator = Nominatim(
+            user_agent="BAXperience-geocoding/1.0", 
+            timeout=10
+        )
+        # Rate limiter: máximo 1 request por segundo para ser respetuoso con la API
+        self.reverse_geocode = RateLimiter(
+            self.geolocator.reverse, 
+            min_delay_seconds=1.2
+        )
+        self.cache = {}  # Cache para evitar requests repetidos
+        
+    def get_barrio_from_coordinates(self, lat: float, lng: float) -> Optional[str]:
+        """
+        Obtener el barrio desde coordenadas usando geocoding reverso
+        
+        Args:
+            lat: Latitud
+            lng: Longitud
+            
+        Returns:
+            Nombre del barrio o None si no se encuentra
+        """
+        if not lat or not lng or lat == 0 or lng == 0:
+            return None
+            
+        # Crear key para cache
+        cache_key = f"{lat:.6f},{lng:.6f}"
+        
+        # Verificar cache primero
+        if cache_key in self.cache:
+            return self.cache[cache_key]
+            
+        try:
+            # Hacer geocoding reverso
+            location = self.reverse_geocode((lat, lng), language='es')
+            
+            if location:
+                address = location.raw.get('address', {})
+                
+                # Buscar barrio en diferentes campos posibles
+                barrio = None
+                
+                # Prioridad de campos para Buenos Aires
+                for field in ['suburb', 'neighbourhood', 'quarter', 'village', 'town', 'district']:
+                    if field in address:
+                        barrio = address[field]
+                        break
+                
+                # Si no encontramos barrio, usar city_district
+                if not barrio and 'city_district' in address:
+                    barrio = address['city_district']
+                    
+                # Limpiar el nombre del barrio
+                if barrio:
+                    barrio = self._clean_barrio_name(barrio)
+                    
+                # Guardar en cache
+                self.cache[cache_key] = barrio
+                
+                if barrio:
+                    logger.debug(f"Geocoding: ({lat}, {lng}) -> {barrio}")
+                else:
+                    logger.debug(f"Geocoding: ({lat}, {lng}) -> No barrio encontrado")
+                    
+                return barrio
+                
+        except Exception as e:
+            logger.warning(f"Error en geocoding para ({lat}, {lng}): {e}")
+            # Guardar None en cache para evitar reintentos
+            self.cache[cache_key] = None
+            
+        return None
+    
+    def _clean_barrio_name(self, barrio: str) -> str:
+        """Limpiar y normalizar nombres de barrios"""
+        if not barrio:
+            return None
+            
+        # Convertir a título (primera letra mayúscula)
+        barrio = barrio.strip().title()
+        
+        # Mapeo de nombres comunes para Buenos Aires
+        barrio_mapping = {
+            'San Nicolás': 'San Nicolas',
+            'Micro Centro': 'San Nicolas',
+            'Microcentro': 'San Nicolas',
+            'Centro': 'San Nicolas',
+            'La Boca': 'Boca',
+            'Puerto Madero': 'Puerto Madero',
+            'San Telmo': 'San Telmo',
+            'Recoleta': 'Recoleta',
+            'Palermo': 'Palermo',
+            'Belgrano': 'Belgrano',
+            'Villa Crespo': 'Villa Crespo',
+            'Caballito': 'Caballito',
+            'Balvanera': 'Balvanera',
+            'Barracas': 'Barracas',
+            'Constitución': 'Constitucion',
+            'Retiro': 'Retiro',
+            'Monserrat': 'Monserrat'
+        }
+        
+        return barrio_mapping.get(barrio, barrio)
+    
+    def get_cache_stats(self) -> dict:
+        """Obtener estadísticas del cache"""
+        return {
+            'total_entries': len(self.cache),
+            'successful_geocoding': sum(1 for v in self.cache.values() if v is not None),
+            'failed_geocoding': sum(1 for v in self.cache.values() if v is None)
+        }
+
 class CSVProcessor:
     """Procesador principal de CSVs"""
     
@@ -66,6 +359,10 @@ class CSVProcessor:
         self.csv_base_path = os.path.join(current_dir, "csv-filtrados")
         self.categoria_ids = {}
         self.subcategoria_ids = {}
+        
+        # Inicializar geocoder mejorado
+        self.geocoder = BarrioGeocoder()
+        logger.info("Geocoder mejorado inicializado")
         
     def connect_databases(self):
         """Conectar a ambas bases de datos"""
@@ -171,8 +468,30 @@ class CSVProcessor:
         return None
 
     def insert_poi(self, poi_data: Dict) -> int:
-        """Insertar POI en base de datos operacional"""
+        """Insertar POI en base de datos operacional con geocoding automático de barrios"""
         cursor = self.operational_conn.cursor()
+        
+        # GEOCODING AUTOMÁTICO: Si no tiene barrio pero tiene coordenadas, calcularlo
+        if (not poi_data.get('barrio') or poi_data.get('barrio') in ['Sin especificar', '', None]) and \
+           poi_data.get('latitud') and poi_data.get('longitud'):
+            
+            try:
+                lat = float(poi_data['latitud'])
+                lng = float(poi_data['longitud'])
+                
+                logger.debug(f"Calculando barrio para POI '{poi_data.get('nombre', 'Unknown')}' en ({lat}, {lng})")
+                
+                # Obtener barrio mediante geocoding mejorado
+                barrio_calculado = self.geocoder.get_barrio_by_coordinates(lat, lng)
+                
+                if barrio_calculado:
+                    poi_data['barrio'] = barrio_calculado
+                    logger.info(f"[OK] Barrio calculado: '{poi_data['nombre']}' -> {barrio_calculado}")
+                else:
+                    logger.debug(f"[WARN] No se pudo calcular barrio para '{poi_data.get('nombre', 'Unknown')}'")
+                    poi_data['barrio'] = 'Sin especificar'
+            except (ValueError, TypeError) as e:
+                logger.warning(f"Error convirtiendo coordenadas para geocoding: {e}")
         
         insert_query = """
         INSERT INTO pois (
@@ -634,6 +953,14 @@ class CSVProcessor:
             # Mostrar resumen
             for categoria, count in results.items():
                 logger.info(f"   {categoria.title()}: {count} POIs")
+            
+            # Mostrar estadísticas de geocoding
+            geocoding_stats = self.geocoder.get_stats()
+            logger.info("[INFO] Estadisticas de Geocoding:")
+            logger.info(f"   Entradas en cache: {geocoding_stats['cache_size']}")
+            logger.info(f"   Barrios unicos encontrados: {len(geocoding_stats['cached_barrios'])}")
+            if geocoding_stats['cached_barrios']:
+                logger.info(f"   Barrios: {', '.join(sorted(geocoding_stats['cached_barrios']))}")
                 
         except Exception as e:
             logger.error(f"Error general en procesamiento: {e}")

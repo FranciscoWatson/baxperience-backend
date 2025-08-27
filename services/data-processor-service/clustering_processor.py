@@ -16,7 +16,8 @@ Autor: BAXperience Team
 import logging
 import numpy as np
 import pandas as pd
-from sklearn.cluster import KMeans
+from sklearn.cluster import KMeans, DBSCAN
+from sklearn.cluster import AgglomerativeClustering
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import silhouette_score
 from sklearn.decomposition import PCA
@@ -85,28 +86,81 @@ class ClusteringProcessor:
         logger.info(f"Cargados {len(df)} POIs para clustering")
         return df
     
-    def geographic_clustering(self, df: pd.DataFrame, n_clusters: int = 8) -> Dict:
+    def find_optimal_clusters(self, coords_scaled: np.ndarray, max_k: int = 15) -> int:
         """
-        Clustering geográfico usando K-means
+        Encuentra el número óptimo de clusters usando el método del codo
+        
+        Args:
+            coords_scaled: Coordenadas normalizadas
+            max_k: Número máximo de clusters a probar
+            
+        Returns:
+            Número óptimo de clusters
+        """
+        logger.info("Determinando número óptimo de clusters...")
+        
+        if len(coords_scaled) < 4:
+            return min(2, len(coords_scaled))
+        
+        # Limitar max_k al número de puntos disponibles
+        max_k = min(max_k, len(coords_scaled) - 1)
+        
+        inertias = []
+        k_range = range(2, max_k + 1)
+        
+        for k in k_range:
+            kmeans = KMeans(n_clusters=k, random_state=42, n_init=10)
+            kmeans.fit(coords_scaled)
+            inertias.append(kmeans.inertia_)
+        
+        # Método del codo: buscar el punto donde la mejora se estabiliza
+        if len(inertias) < 2:
+            return 2
+        
+        # Calcular las diferencias (derivada discreta)
+        diffs = np.diff(inertias)
+        
+        # Calcular las segundas diferencias (curvatura)
+        if len(diffs) < 2:
+            return 3
+        
+        second_diffs = np.diff(diffs)
+        
+        # El codo está donde la curvatura es máxima (más negativa)
+        optimal_k = np.argmin(second_diffs) + 3  # +3 porque empezamos en k=2 y perdemos 2 elementos
+        
+        # Asegurar que esté en rango válido
+        optimal_k = max(2, min(optimal_k, max_k))
+        
+        logger.info(f"Número óptimo de clusters determinado: {optimal_k}")
+        return optimal_k
+
+    def geographic_clustering(self, df: pd.DataFrame, n_clusters: Optional[int] = None) -> Dict:
+        """
+        Clustering geográfico usando K-means con detección automática del número óptimo
         
         Args:
             df: DataFrame con POIs
-            n_clusters: Número de clusters geográficos
+            n_clusters: Número específico de clusters (opcional, se auto-detecta si es None)
             
         Returns:
             Dict con resultados del clustering
         """
-        logger.info(f"Ejecutando clustering geográfico con {n_clusters} clusters...")
-        
         if df.empty:
             return {'status': 'no_data', 'clusters': 0}
         
         # Preparar datos geográficos
-        coords = df[['latitud', 'longitud']].values
+        coords = df[['latitud', 'longitud']].astype(float).values
         
         # Normalizar coordenadas
         scaler = StandardScaler()
         coords_scaled = scaler.fit_transform(coords)
+        
+        # Determinar número óptimo de clusters si no se especifica
+        if n_clusters is None:
+            n_clusters = self.find_optimal_clusters(coords_scaled)
+        
+        logger.info(f"Ejecutando clustering geográfico con {n_clusters} clusters...")
         
         # K-means clustering
         kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
@@ -155,6 +209,158 @@ class ClusteringProcessor:
         logger.info(f"Clustering geográfico completado. Silhouette score: {silhouette:.3f}")
         return results
     
+    def dbscan_clustering(self, df: pd.DataFrame, eps: float = 0.01, min_samples: int = 3) -> Dict:
+        """
+        Clustering usando DBSCAN para detectar clusters de densidad variable
+        
+        Args:
+            df: DataFrame con POIs
+            eps: Radio máximo entre puntos en un cluster
+            min_samples: Mínimo número de puntos para formar un cluster
+            
+        Returns:
+            Dict con resultados del clustering DBSCAN
+        """
+        logger.info(f"Ejecutando clustering DBSCAN (eps={eps}, min_samples={min_samples})...")
+        
+        if df.empty:
+            return {'status': 'no_data', 'clusters': 0}
+        
+        # Preparar datos geográficos
+        coords = df[['latitud', 'longitud']].astype(float).values
+        
+        # Normalizar coordenadas
+        scaler = StandardScaler()
+        coords_scaled = scaler.fit_transform(coords)
+        
+        # DBSCAN clustering
+        dbscan = DBSCAN(eps=eps, min_samples=min_samples)
+        cluster_labels = dbscan.fit_predict(coords_scaled)
+        
+        # Agregar clusters al DataFrame
+        df_clustered = df.copy()
+        df_clustered['cluster_dbscan'] = cluster_labels
+        
+        # Análisis de resultados
+        n_clusters = len(set(cluster_labels)) - (1 if -1 in cluster_labels else 0)
+        n_noise = list(cluster_labels).count(-1)
+        
+        # Calcular silhouette solo si hay más de 1 cluster
+        silhouette = 0.0
+        if n_clusters > 1:
+            # Filtrar ruido para silhouette
+            mask = cluster_labels != -1
+            if np.sum(mask) > 1:
+                silhouette = silhouette_score(coords_scaled[mask], cluster_labels[mask])
+        
+        # Estadísticas por cluster
+        cluster_stats = []
+        for i in set(cluster_labels):
+            if i == -1:  # Ruido
+                continue
+                
+            cluster_data = df_clustered[df_clustered['cluster_dbscan'] == i]
+            if len(cluster_data) > 0:
+                stats = {
+                    'cluster_id': int(i),
+                    'num_pois': len(cluster_data),
+                    'centroide_lat': float(cluster_data['latitud'].mean()),
+                    'centroide_lng': float(cluster_data['longitud'].mean()),
+                    'categorias': cluster_data['categoria'].value_counts().to_dict(),
+                    'density_score': len(cluster_data) / max(1, len(df))  # Densidad relativa
+                }
+                cluster_stats.append(stats)
+        
+        results = {
+            'status': 'success',
+            'algorithm': 'dbscan',
+            'n_clusters': n_clusters,
+            'n_noise': n_noise,
+            'noise_ratio': n_noise / len(df) if len(df) > 0 else 0,
+            'silhouette_score': float(silhouette),
+            'cluster_stats': cluster_stats,
+            'dataframe': df_clustered
+        }
+        
+        logger.info(f"DBSCAN completado. Clusters: {n_clusters}, Ruido: {n_noise}")
+        return results
+    
+    def hierarchical_clustering(self, df: pd.DataFrame, n_clusters: int = 6) -> Dict:
+        """
+        Clustering jerárquico aglomerativo
+        
+        Args:
+            df: DataFrame con POIs
+            n_clusters: Número de clusters objetivo
+            
+        Returns:
+            Dict con resultados del clustering jerárquico
+        """
+        logger.info(f"Ejecutando clustering jerárquico con {n_clusters} clusters...")
+        
+        if df.empty:
+            return {'status': 'no_data', 'clusters': 0}
+        
+        # Preparar datos geográficos
+        coords = df[['latitud', 'longitud']].astype(float).values
+        
+        # Normalizar coordenadas
+        scaler = StandardScaler()
+        coords_scaled = scaler.fit_transform(coords)
+        
+        # Clustering jerárquico
+        hierarchical = AgglomerativeClustering(n_clusters=n_clusters, linkage='ward')
+        cluster_labels = hierarchical.fit_predict(coords_scaled)
+        
+        # Calcular métricas
+        silhouette = silhouette_score(coords_scaled, cluster_labels)
+        
+        # Agregar clusters al DataFrame
+        df_clustered = df.copy()
+        df_clustered['cluster_hierarchical'] = cluster_labels
+        
+        # Estadísticas por cluster
+        cluster_stats = []
+        for i in range(n_clusters):
+            cluster_data = df_clustered[df_clustered['cluster_hierarchical'] == i]
+            
+            if len(cluster_data) > 0:
+                stats = {
+                    'cluster_id': int(i),
+                    'num_pois': len(cluster_data),
+                    'centroide_lat': float(cluster_data['latitud'].mean()),
+                    'centroide_lng': float(cluster_data['longitud'].mean()),
+                    'categorias': cluster_data['categoria'].value_counts().to_dict(),
+                    'compactness': self._calculate_cluster_compactness(cluster_data)
+                }
+                cluster_stats.append(stats)
+        
+        results = {
+            'status': 'success',
+            'algorithm': 'hierarchical',
+            'n_clusters': n_clusters,
+            'silhouette_score': float(silhouette),
+            'cluster_stats': cluster_stats,
+            'dataframe': df_clustered
+        }
+        
+        logger.info(f"Clustering jerárquico completado. Silhouette score: {silhouette:.3f}")
+        return results
+    
+    def _calculate_cluster_compactness(self, cluster_data: pd.DataFrame) -> float:
+        """
+        Calcula la compacidad de un cluster (qué tan agrupados están los puntos)
+        """
+        if len(cluster_data) < 2:
+            return 1.0
+        
+        coords = cluster_data[['latitud', 'longitud']].astype(float).values
+        center = coords.mean(axis=0)
+        
+        # Distancia promedio al centro
+        distances = np.sqrt(((coords - center) ** 2).sum(axis=1))
+        return 1.0 / (1.0 + distances.mean())  # Invertir para que mayor compacidad = mayor valor
+
     def category_clustering(self, df: pd.DataFrame) -> Dict:
         """
         Clustering por categorías y características
@@ -378,6 +584,9 @@ class ClusteringProcessor:
                     if 'dataframe' in clean_results:
                         del clean_results['dataframe']
                     
+                    # Convertir tipos numpy a tipos nativos de Python
+                    clean_results = self._convert_numpy_types(clean_results)
+                    
                     insert_sql = """
                     INSERT INTO clustering_results 
                     (algorithm_type, results_json, silhouette_score, n_clusters, total_pois)
@@ -387,9 +596,9 @@ class ClusteringProcessor:
                     params = (
                         algorithm_type,
                         json.dumps(clean_results, default=str, ensure_ascii=False),
-                        result_data.get('silhouette_score'),
-                        result_data.get('n_clusters'),
-                        result_data.get('total_pois')
+                        float(result_data.get('silhouette_score', 0)),
+                        int(result_data.get('n_clusters', 0)),
+                        int(result_data.get('total_pois', 0))
                     )
                     
                     cursor.execute(insert_sql, params)
@@ -426,16 +635,22 @@ class ClusteringProcessor:
             # Ejecutar diferentes tipos de clustering
             results = {}
             
-            # 1. Clustering geográfico
-            results['geographic'] = self.geographic_clustering(df, n_clusters=8)
+            # 1. Clustering geográfico (K-means automático)
+            results['geographic'] = self.geographic_clustering(df)
             
-            # 2. Análisis por categorías
+            # 2. Clustering DBSCAN para densidad
+            results['dbscan'] = self.dbscan_clustering(df)
+            
+            # 3. Clustering jerárquico  
+            results['hierarchical'] = self.hierarchical_clustering(df)
+            
+            # 4. Análisis por categorías
             results['category'] = self.category_clustering(df)
             
-            # 3. Análisis por barrios
+            # 5. Análisis por barrios
             results['neighborhood'] = self.neighborhood_clustering(df)
             
-            # 4. Detección de zonas turísticas
+            # 6. Detección de zonas turísticas
             results['tourist_zones'] = self.detect_tourist_zones(
                 results['geographic'], 
                 results['category']
@@ -470,13 +685,30 @@ class ClusteringProcessor:
         finally:
             self.disconnect_processor_db()
     
+    def _convert_numpy_types(self, obj):
+        """Convertir tipos numpy a tipos nativos de Python para JSON/BD"""
+        import json
+        
+        if isinstance(obj, dict):
+            return {key: self._convert_numpy_types(value) for key, value in obj.items()}
+        elif isinstance(obj, list):
+            return [self._convert_numpy_types(item) for item in obj]
+        elif isinstance(obj, np.integer):
+            return int(obj)
+        elif isinstance(obj, np.floating):
+            return float(obj)
+        elif isinstance(obj, np.ndarray):
+            return obj.tolist()
+        else:
+            return obj
+
     # Métodos auxiliares
     def _calculate_cluster_radius(self, cluster_data: pd.DataFrame) -> float:
         """Calcular radio del cluster en km"""
         if len(cluster_data) < 2:
             return 0.0
         
-        coords = cluster_data[['latitud', 'longitud']].values
+        coords = cluster_data[['latitud', 'longitud']].astype(float).values
         center = coords.mean(axis=0)
         
         # Calcular distancia máxima al centro (aproximación simple)
@@ -491,7 +723,7 @@ class ClusteringProcessor:
         if len(data) < 2:
             return 0.0
         
-        coords = data[['latitud', 'longitud']].values
+        coords = data[['latitud', 'longitud']].astype(float).values
         lat_range = coords[:, 0].max() - coords[:, 0].min()
         lng_range = coords[:, 1].max() - coords[:, 1].min()
         

@@ -97,6 +97,7 @@ class RecommendationService:
     def filter_pois_and_events_by_clusters(self, user_prefs: Dict) -> Dict[str, List[Dict]]:
         """
         Filtrar POIs y eventos usando clusters geográficos y temáticos
+        CON SAMPLING BALANCEADO POR CATEGORÍA para itinerarios realistas
         """
         logger.info("Filtrando POIs y eventos por clusters...")
         
@@ -109,48 +110,108 @@ class RecommendationService:
             actividades_evitar = user_prefs.get('actividades_evitar', [])
             fecha_visita = user_prefs.get('fecha_visita', datetime.now().date().isoformat())
             
-            # === OBTENER POIs ===
-            pois_query = """
-            SELECT 
-                id, poi_id, nombre, categoria, subcategoria,
-                latitud, longitud, 
-                COALESCE(barrio, 'Sin especificar') as barrio, 
-                comuna,
-                COALESCE(valoracion_promedio, 0) as valoracion_promedio, 
-                COALESCE(popularidad_score, 0) as popularidad_score,
-                tipo_cocina, tipo_ambiente,
-                COALESCE(tiene_web, false) as tiene_web, 
-                COALESCE(tiene_telefono, false) as tiene_telefono, 
-                COALESCE(es_gratuito, false) as es_gratuito,
-                'poi' as item_type
-            FROM lugares_clustering 
-            WHERE latitud IS NOT NULL AND longitud IS NOT NULL
-            """
+            # === IMPLEMENTAR SAMPLING BALANCEADO POR CATEGORÍA ===
+            pois_balanceados = []
             
-            # Filtrar POIs por categorías
-            if categorias:
-                categorias_sql = "', '".join(categorias)
-                pois_query += f" AND categoria IN ('{categorias_sql}')"
-            
-            # Filtrar POIs por zona
-            if zona and zona.strip():
-                pois_query += f" AND (barrio ILIKE '%{zona}%' OR barrio IS NULL)"
-            
-            # Excluir actividades no deseadas en POIs
-            if actividades_evitar:
-                evitar_sql = "', '".join(actividades_evitar)
-                pois_query += f" AND categoria NOT IN ('{evitar_sql}')"
-            
-            pois_query += """
-            ORDER BY 
-                CASE WHEN barrio IS NOT NULL THEN 1 ELSE 0 END DESC,
-                RANDOM()
-            LIMIT 100
-            """
-            
-            cursor.execute(pois_query)
-            pois_result = cursor.fetchall()
-            pois = [dict(poi) for poi in pois_result]
+            if categorias and len(categorias) > 1:
+                # ESTRATEGIA BALANCEADA: Obtener POIs por categoría por separado
+                for categoria in categorias:
+                    pois_query = """
+                    SELECT 
+                        id, poi_id, nombre, categoria, subcategoria,
+                        latitud, longitud, 
+                        COALESCE(barrio, 'Sin especificar') as barrio, 
+                        comuna,
+                        COALESCE(valoracion_promedio, 0) as valoracion_promedio, 
+                        COALESCE(popularidad_score, 0) as popularidad_score,
+                        tipo_cocina, tipo_ambiente,
+                        COALESCE(tiene_web, false) as tiene_web, 
+                        COALESCE(tiene_telefono, false) as tiene_telefono, 
+                        COALESCE(es_gratuito, false) as es_gratuito,
+                        'poi' as item_type
+                    FROM lugares_clustering 
+                    WHERE latitud IS NOT NULL AND longitud IS NOT NULL
+                    AND categoria = %s
+                    """
+                    
+                    # Filtrar por zona si se especifica
+                    if zona and zona.strip():
+                        pois_query += " AND (barrio ILIKE %s OR barrio IS NULL)"
+                        params = [categoria, f"%{zona}%"]
+                    else:
+                        params = [categoria]
+                    
+                    # Excluir actividades no deseadas
+                    if actividades_evitar:
+                        evitar_sql = "', '".join(actividades_evitar)
+                        pois_query += f" AND categoria NOT IN ('{evitar_sql}')"
+                    
+                    # LÓGICA BALANCEADA: Más POIs para categorías no-gastronómicas
+                    if categoria == 'Gastronomía':
+                        limit_categoria = 40  # Limitar gastronomía
+                    else:
+                        limit_categoria = 60  # Priorizar cultural/entretenimiento
+                    
+                    pois_query += f"""
+                    ORDER BY 
+                        CASE WHEN barrio IS NOT NULL THEN 1 ELSE 0 END DESC,
+                        popularidad_score DESC NULLS LAST,
+                        RANDOM()
+                    LIMIT {limit_categoria}
+                    """
+                    
+                    cursor.execute(pois_query, params)
+                    pois_categoria = cursor.fetchall()
+                    
+                    logger.info(f"  {categoria}: {len(pois_categoria)} POIs obtenidos")
+                    pois_balanceados.extend([dict(poi) for poi in pois_categoria])
+                
+                pois = pois_balanceados
+                
+            else:
+                # ESTRATEGIA ORIGINAL: Una sola categoría o sin preferencias específicas
+                pois_query = """
+                SELECT 
+                    id, poi_id, nombre, categoria, subcategoria,
+                    latitud, longitud, 
+                    COALESCE(barrio, 'Sin especificar') as barrio, 
+                    comuna,
+                    COALESCE(valoracion_promedio, 0) as valoracion_promedio, 
+                    COALESCE(popularidad_score, 0) as popularidad_score,
+                    tipo_cocina, tipo_ambiente,
+                    COALESCE(tiene_web, false) as tiene_web, 
+                    COALESCE(tiene_telefono, false) as tiene_telefono, 
+                    COALESCE(es_gratuito, false) as es_gratuito,
+                    'poi' as item_type
+                FROM lugares_clustering 
+                WHERE latitud IS NOT NULL AND longitud IS NOT NULL
+                """
+                
+                # Filtrar POIs por categorías
+                if categorias:
+                    categorias_sql = "', '".join(categorias)
+                    pois_query += f" AND categoria IN ('{categorias_sql}')"
+                
+                # Filtrar POIs por zona
+                if zona and zona.strip():
+                    pois_query += f" AND (barrio ILIKE '%{zona}%' OR barrio IS NULL)"
+                
+                # Excluir actividades no deseadas en POIs
+                if actividades_evitar:
+                    evitar_sql = "', '".join(actividades_evitar)
+                    pois_query += f" AND categoria NOT IN ('{evitar_sql}')"
+                
+                pois_query += """
+                ORDER BY 
+                    CASE WHEN barrio IS NOT NULL THEN 1 ELSE 0 END DESC,
+                    popularidad_score DESC NULLS LAST,
+                    RANDOM()
+                LIMIT 200
+                """
+                
+                cursor.execute(pois_query)
+                pois_result = cursor.fetchall()
+                pois = [dict(poi) for poi in pois_result]
             
             # === OBTENER EVENTOS ===
             eventos_query = """
@@ -254,34 +315,30 @@ class RecommendationService:
         for poi in pois:
             score = 0.0
             
-            # Score base aleatorio para simular popularidad (ya que no tenemos datos reales)
-            import random
-            score += random.uniform(0.3, 0.8)
-            
-            # Score por valoración (simulada ya que todas están en 0)
-            valoracion = float(poi.get('valoracion_promedio', 0))
-            if valoracion > 0:
-                score += valoracion * 0.2
+            # Score base usando datos reales de popularidad
+            popularidad = float(poi.get('popularidad_score', 0))
+            if popularidad > 0:
+                score += min(popularidad, 1.0)  # Normalizar a máximo 1.0
             else:
-                # Simular valoración basada en categoría
-                category_scores = {
-                    'Gastronomía': 0.4,
-                    'Museos': 0.35,
-                    'Monumentos': 0.3,
-                    'Lugares Históricos': 0.32,
-                    'Entretenimiento': 0.38
-                }
-                score += category_scores.get(poi.get('categoria', ''), 0.3)
-            
-            # Bonus por características específicas
-            if poi.get('tiene_web'):
+                # Solo si no hay datos, usar score mínimo
                 score += 0.1
             
+            # Score por valoración real de la BD
+            valoracion = float(poi.get('valoracion_promedio', 0))
+            if valoracion > 0:
+                score += (valoracion / 5.0) * 0.5  # Normalizar de 0-5 a 0-0.5
+            
+            # Score adicional por características verificables
+            if poi.get('tiene_web'):
+                score += 0.05  # Reducido de 0.1
             if poi.get('tiene_telefono'):
                 score += 0.05
+            if poi.get('email') and poi.get('email').strip():
+                score += 0.05  # Nuevo: puntos por tener email
             
-            if poi.get('es_gratuito'):
-                score += 0.15
+            # Bonus por características específicas
+            if poi.get('es_gratuito') and user_prefs.get('presupuesto') == 'bajo':
+                score += 0.2  # Más puntos si necesita bajo presupuesto
             
             # Bonus por zona preferida
             zona_pref = user_prefs.get('zona_preferida', '')

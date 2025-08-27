@@ -18,7 +18,8 @@ from psycopg2.extras import RealDictCursor
 import logging
 import sys
 import hashlib
-from typing import Dict, List, Optional
+import math
+from typing import Dict, List, Optional, Tuple
 from csv_processor import DatabaseConfig
 
 # Configurar logging
@@ -39,7 +40,160 @@ class ETLProcessor:
         self.operational_conn = None
         self.processor_conn = None
     
-    def generar_hash_evento(self, nombre: str, fecha_inicio: str, ubicacion: str) -> str:
+    def calculate_distance_km(self, lat1: float, lng1: float, lat2: float, lng2: float) -> float:
+        """
+        Calcular distancia entre dos puntos usando fórmula de Haversine
+        """
+        # Radio de la Tierra en km
+        R = 6371.0
+        
+        # Convertir grados a radianes
+        lat1_rad = math.radians(lat1)
+        lng1_rad = math.radians(lng1)
+        lat2_rad = math.radians(lat2)
+        lng2_rad = math.radians(lng2)
+        
+        # Diferencias
+        dlat = lat2_rad - lat1_rad
+        dlng = lng2_rad - lng1_rad
+        
+        # Fórmula de Haversine
+        a = math.sin(dlat/2)**2 + math.cos(lat1_rad) * math.cos(lat2_rad) * math.sin(dlng/2)**2
+        c = 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
+        
+        return R * c
+    
+    def get_barrio_from_coordinates(self, latitud: float, longitud: float) -> Tuple[Optional[str], Optional[int]]:
+        """
+        Determinar barrio y comuna basándose en coordenadas usando POIs de referencia
+        """
+        if not latitud or not longitud:
+            return None, None
+        
+        # Obtener POIs de referencia que tengan barrio asignado
+        op_cursor = self.operational_conn.cursor(cursor_factory=RealDictCursor)
+        
+        reference_query = """
+        SELECT DISTINCT 
+            barrio, comuna, latitud, longitud,
+            COUNT(*) as pois_en_barrio
+        FROM pois 
+        WHERE barrio IS NOT NULL 
+        AND barrio != ''
+        AND latitud IS NOT NULL 
+        AND longitud IS NOT NULL
+        GROUP BY barrio, comuna, latitud, longitud
+        HAVING COUNT(*) >= 1
+        ORDER BY pois_en_barrio DESC
+        """
+        
+        op_cursor.execute(reference_query)
+        referencias = op_cursor.fetchall()
+        op_cursor.close()
+        
+        if not referencias:
+            return None, None
+        
+        # Encontrar el barrio más cercano
+        mejor_barrio = None
+        mejor_comuna = None
+        distancia_minima = float('inf')
+        
+        for ref in referencias:
+            try:
+                ref_lat = float(ref['latitud'])
+                ref_lng = float(ref['longitud'])
+                
+                distancia = self.calculate_distance_km(latitud, longitud, ref_lat, ref_lng)
+                
+                # Si está muy cerca (menos de 2km), es muy probable que sea el mismo barrio
+                if distancia < distancia_minima:
+                    distancia_minima = distancia
+                    mejor_barrio = ref['barrio']
+                    mejor_comuna = ref['comuna']
+                    
+                    # Si está muy cerca, no necesitamos seguir buscando
+                    if distancia < 0.5:  # Menos de 500 metros
+                        break
+                        
+            except (ValueError, TypeError):
+                continue
+        
+        # Solo asignar si está razonablemente cerca (menos de 3km)
+        if distancia_minima < 3.0:
+            return mejor_barrio, mejor_comuna
+        
+        return None, None
+    
+    def assign_missing_barrios(self) -> int:
+        """
+        Asignar barrios faltantes usando geocodificación inversa interna
+        """
+        logger.info("🗺️ Asignando barrios faltantes usando coordenadas...")
+        
+        # Obtener POIs sin barrio
+        op_cursor = self.operational_conn.cursor(cursor_factory=RealDictCursor)
+        
+        missing_barrios_query = """
+        SELECT id, nombre, latitud, longitud, categoria_id
+        FROM pois 
+        WHERE (barrio IS NULL OR barrio = '')
+        AND latitud IS NOT NULL 
+        AND longitud IS NOT NULL
+        ORDER BY id
+        """
+        
+        op_cursor.execute(missing_barrios_query)
+        pois_sin_barrio = op_cursor.fetchall()
+        op_cursor.close()
+        
+        logger.info(f"📍 Encontrados {len(pois_sin_barrio)} POIs sin barrio asignado")
+        
+        if not pois_sin_barrio:
+            return 0
+        
+        # Actualizar POIs con barrios calculados
+        update_cursor = self.operational_conn.cursor()
+        update_query = """
+        UPDATE pois 
+        SET barrio = %s, comuna = %s 
+        WHERE id = %s
+        """
+        
+        actualizados = 0
+        errores = 0
+        
+        for poi in pois_sin_barrio:
+            try:
+                latitud = float(poi['latitud'])
+                longitud = float(poi['longitud'])
+                
+                # Calcular barrio usando geocodificación interna
+                barrio, comuna = self.get_barrio_from_coordinates(latitud, longitud)
+                
+                if barrio:
+                    update_cursor.execute(update_query, (barrio, comuna, poi['id']))
+                    actualizados += 1
+                    
+                    if actualizados % 50 == 0:
+                        logger.info(f"   Actualizados {actualizados}/{len(pois_sin_barrio)} POIs...")
+                        self.operational_conn.commit()  # Commit intermedio
+                        
+                    # Log de ejemplo para los primeros 5
+                    if actualizados <= 5:
+                        logger.info(f"   ✅ {poi['nombre'][:30]}... → {barrio}")
+                        
+            except Exception as e:
+                errores += 1
+                if errores <= 3:  # Solo log los primeros errores
+                    logger.error(f"Error procesando POI {poi['id']}: {e}")
+        
+        # Commit final
+        self.operational_conn.commit()
+        update_cursor.close()
+        
+        logger.info(f"✅ Asignación de barrios completada: {actualizados} actualizados, {errores} errores")
+        return actualizados
         """
         Genera un hash único para un evento basado en nombre, fecha e ubicación
         """
@@ -301,42 +455,49 @@ class ETLProcessor:
         return count
         
     def calculate_popularity_score(self, poi: Dict) -> float:
-        """Calcular score de popularidad basado en múltiples factores"""
-        import random
+        """Calcular score de popularidad basado en datos reales disponibles"""
         import math
         
-        # Score base aleatorio para simular popularidad real
-        base_score = random.uniform(0.2, 0.8)
+        score = 0.0
         
-        # Ajustar por categoría
+        # Score basado en valoraciones reales
+        valoracion = float(poi.get('valoracion_promedio', 0))
+        num_valoraciones = int(poi.get('numero_valoraciones', 0))
+        
+        if valoracion > 0 and num_valoraciones > 0:
+            # Score por calidad de valoración (0-5 → 0-0.6)
+            score += (valoracion / 5.0) * 0.6
+            
+            # Score por cantidad de valoraciones (logarítmico para evitar dominio)
+            review_score = math.log(num_valoraciones + 1) / math.log(100)  # Normalizado a ~100 reviews
+            score += min(review_score, 0.3)  # Máximo 0.3 puntos por reviews
+        else:
+            # Si no hay valoraciones, score mínimo base
+            score += 0.2
+        
+        # Score por completitud de información (indica calidad/popularidad)
+        if poi.get('web') and poi.get('web').strip():
+            score += 0.1
+        if poi.get('telefono') and poi.get('telefono').strip():
+            score += 0.1
+        if poi.get('barrio') and poi.get('barrio').strip():
+            score += 0.05
+        if poi.get('tipo_cocina') and poi.get('tipo_cocina').strip():
+            score += 0.05
+        if poi.get('tipo_ambiente') and poi.get('tipo_ambiente').strip():
+            score += 0.05
+        
+        # Ajuste leve por categoría (basado en datos típicos de turismo)
         categoria = poi.get('categoria', '').lower()
-        category_multiplier = {
-            'gastronomía': 1.3,
-            'museos': 1.0,
-            'monumentos': 0.9,
-            'lugares históricos': 0.85,
-            'entretenimiento': 1.2
-        }
+        if 'gastronomía' in categoria:
+            score *= 1.05  # Gastronomía ligeramente más popular
+        elif 'entretenimiento' in categoria:
+            score *= 1.1   # Entretenimiento más demandado
+        elif 'museo' in categoria:
+            score *= 0.95  # Museos algo menos populares en general
         
-        multiplier = 1.0
-        for cat_key, mult in category_multiplier.items():
-            if cat_key in categoria:
-                multiplier = mult
-                break
-        
-        # Bonus por tener información completa
-        if poi.get('barrio'):
-            base_score += 0.1
-        if poi.get('direccion'):
-            base_score += 0.05
-        if poi.get('telefono'):
-            base_score += 0.05
-        
-        # Calcular score final
-        final_score = base_score * multiplier
-        
-        # Mantener en rango 0.1 - 1.0
-        final_score = max(0.1, min(1.0, final_score))
+        # Mantener en rango realista 0.1 - 1.0
+        final_score = max(0.1, min(1.0, score))
         
         return round(final_score, 3)
         
@@ -653,13 +814,19 @@ class ETLProcessor:
         return count
         
     def run_full_etl(self) -> Dict[str, int]:
-        """Ejecutar ETL completo con control de duplicación"""
+        """Ejecutar ETL completo con control de duplicación y asignación de barrios"""
         logger.info("🚀 Iniciando ETL completo...")
         
         results = {}
         
         try:
             self.connect_databases()
+            
+            # PASO 1: Asignar barrios faltantes usando geocodificación interna
+            logger.info("🗺️ PASO 1: Asignando barrios usando coordenadas...")
+            results['barrios_asignados'] = self.assign_missing_barrios()
+            
+            # PASO 2: Crear esquema optimizado
             self.create_processor_schema()
             
             # Verificar si ya tenemos POIs de CSV cargados
@@ -668,19 +835,20 @@ class ETLProcessor:
             existing_pois = proc_cursor.fetchone()[0]
             proc_cursor.close()
             
-            # Solo cargar POIs de CSV si no existen (evitar duplicación)
+            # PASO 3: Solo cargar POIs de CSV si no existen (evitar duplicación)
             if existing_pois == 0:
-                logger.info("📋 Primera carga: Procesando POIs desde CSV...")
+                logger.info("📋 PASO 3: Primera carga - Procesando POIs desde CSV...")
                 results['pois'] = self.extract_transform_load_pois()
             else:
-                logger.info(f"📋 POIs ya existen ({existing_pois}), saltando carga de CSV")
+                logger.info(f"📋 PASO 3: POIs ya existen ({existing_pois}), saltando carga de CSV")
                 results['pois'] = existing_pois
             
-            # Calcular métricas por barrio
+            # PASO 4: Calcular métricas por barrio
+            logger.info("📊 PASO 4: Calculando métricas por barrio...")
             results['barrios'] = self.calculate_barrio_metrics()
             
-            # Siempre procesar eventos (se limpian y recargan)
-            logger.info("📅 Procesando eventos desde BD operacional...")
+            # PASO 5: Siempre procesar eventos (se limpian y recargan)
+            logger.info("📅 PASO 5: Procesando eventos desde BD operacional...")
             results['eventos'] = self.extract_transform_load_eventos()
             
             logger.info("✅ ETL completado exitosamente!")
@@ -705,6 +873,7 @@ def main():
         print("\n" + "="*50)
         print("RESUMEN ETL")
         print("="*50)
+        print(f"Barrios asignados:      {results.get('barrios_asignados', 0):4}")
         print(f"POIs transferidos:      {results.get('pois', 0):4}")
         print(f"Barrios analizados:     {results.get('barrios', 0):4}")
         print(f"Eventos transferidos:   {results.get('eventos', 0):4}")
