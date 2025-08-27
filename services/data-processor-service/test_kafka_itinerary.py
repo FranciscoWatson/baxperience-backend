@@ -138,7 +138,7 @@ def test_itinerary_scenarios():
             'name': 'Usuario foodie con preferencias de BD',
             'user_id': 1,  # Francisco - foodie urbano
             'request_data': {
-                'fecha_visita': '2024-08-30',
+                'fecha_visita': '2025-08-30',
                 'hora_inicio': '10:00',  # Inicio a las 10:00 am
                 'duracion_horas': 6,
                 'categorias_preferidas': None,  # Usar de BD
@@ -150,7 +150,7 @@ def test_itinerary_scenarios():
             'name': 'Usuario cultural con override de zona',
             'user_id': 2,  # María - cultural
             'request_data': {
-                'fecha_visita': '2024-08-30',
+                'fecha_visita': '2025-08-30',
                 'hora_inicio': '14:00',  # Inicio después del almuerzo
                 'duracion_horas': 4,
                 'categorias_preferidas': ['Museos'],  # Override
@@ -162,7 +162,7 @@ def test_itinerary_scenarios():
             'name': 'Aventurera con presupuesto bajo',
             'user_id': 4,  # Lucía - aventurera
             'request_data': {
-                'fecha_visita': '2024-08-30',
+                'fecha_visita': '2025-08-30',
                 'hora_inicio': '09:00',  # Inicio temprano
                 'duracion_horas': 8,
                 'zona_preferida': None,  # Usar de BD: La Boca
@@ -173,7 +173,7 @@ def test_itinerary_scenarios():
             'name': 'Usuario inexistente (test de error)',
             'user_id': 999,
             'request_data': {
-                'fecha_visita': '2024-08-30',
+                'fecha_visita': '2025-08-30',
                 'hora_inicio': '11:30',  # Hora justo antes del almuerzo
                 'duracion_horas': 4
             }

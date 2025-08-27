@@ -329,6 +329,8 @@ class DataProcessorService:
                     return float(obj) if hasattr(obj, 'item') else str(obj)
                 elif hasattr(obj, 'quantize'):  # Decimal objects
                     return float(obj)
+                elif hasattr(obj, 'isoformat'):  # date/datetime objects
+                    return obj.isoformat()
                 else:
                     return obj
             
@@ -605,6 +607,8 @@ class DataProcessorService:
                     return float(obj) if hasattr(obj, 'item') else str(obj)
                 elif hasattr(obj, 'quantize'):  # Decimal objects
                     return float(obj)
+                elif hasattr(obj, 'isoformat'):  # date/datetime objects
+                    return obj.isoformat()
                 else:
                     return obj
             

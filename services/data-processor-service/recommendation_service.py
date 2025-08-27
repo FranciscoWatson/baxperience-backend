@@ -417,6 +417,12 @@ class RecommendationService:
             for evento_row in eventos_result:
                 evento = dict(evento_row)
                 
+                # Convertir objetos date a strings para JSON serialization
+                if evento.get('fecha_inicio') and hasattr(evento['fecha_inicio'], 'isoformat'):
+                    evento['fecha_inicio'] = evento['fecha_inicio'].isoformat()
+                if evento.get('fecha_fin') and hasattr(evento['fecha_fin'], 'isoformat'):
+                    evento['fecha_fin'] = evento['fecha_fin'].isoformat()
+                
                 # Agregar campos faltantes para compatibilidad
                 evento['poi_id'] = evento['evento_id']
                 evento['comuna'] = None
