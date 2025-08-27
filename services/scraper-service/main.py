@@ -52,10 +52,10 @@ def main():
         # Enviar evento a Kafka automáticamente
         try:
             send_to_kafka(datos_json, archivo_json)
-            print(f"✅ Evento enviado a Kafka automáticamente")
+            print(f"Evento enviado a Kafka automaticamente")
         except Exception as e:
-            print(f"⚠️ Error enviando a Kafka: {e}")
-            print(f"   Los datos están disponibles en: {archivo_json}")
+            print(f"Error enviando a Kafka: {e}")
+            print(f"   Los datos estan disponibles en: {archivo_json}")
         
         return datos_json
         
@@ -105,15 +105,15 @@ def send_to_kafka(datos_json, archivo_json):
         
         producer.close()
         
-        print(f"📤 Evento enviado a Kafka: {scraper_event['data']['events_count']} eventos")
+        print(f"Evento enviado a Kafka: {scraper_event['data']['events_count']} eventos")
         
     except ImportError:
-        print("⚠️ kafka-python no está instalado. Instalando...")
+        print("kafka-python no está instalado. Instalando...")
         os.system("pip install kafka-python")
         # Reintentar después de instalar
         send_to_kafka(datos_json, archivo_json)
     except Exception as e:
-        print(f"❌ Error enviando a Kafka: {e}")
+        print(f"Error enviando a Kafka: {e}")
         raise
 
 if __name__ == "__main__":

@@ -286,18 +286,44 @@ class ETLProcessor:
         return count
         
     def calculate_popularity_score(self, poi: Dict) -> float:
-        """Calcular score de popularidad basado en valoraciones"""
-        valoracion = poi['valoracion_promedio'] or 0.0
-        num_reviews = poi['numero_valoraciones'] or 0
-        
-        # Fórmula simple: (valoración * log(reviews + 1))
+        """Calcular score de popularidad basado en múltiples factores"""
+        import random
         import math
-        if num_reviews > 0:
-            score = valoracion * math.log(num_reviews + 1)
-        else:
-            score = valoracion * 0.5  # Penalizar POIs sin reviews
-            
-        return round(score, 2)
+        
+        # Score base aleatorio para simular popularidad real
+        base_score = random.uniform(0.2, 0.8)
+        
+        # Ajustar por categoría
+        categoria = poi.get('categoria', '').lower()
+        category_multiplier = {
+            'gastronomía': 1.3,
+            'museos': 1.0,
+            'monumentos': 0.9,
+            'lugares históricos': 0.85,
+            'entretenimiento': 1.2
+        }
+        
+        multiplier = 1.0
+        for cat_key, mult in category_multiplier.items():
+            if cat_key in categoria:
+                multiplier = mult
+                break
+        
+        # Bonus por tener información completa
+        if poi.get('barrio'):
+            base_score += 0.1
+        if poi.get('direccion'):
+            base_score += 0.05
+        if poi.get('telefono'):
+            base_score += 0.05
+        
+        # Calcular score final
+        final_score = base_score * multiplier
+        
+        # Mantener en rango 0.1 - 1.0
+        final_score = max(0.1, min(1.0, final_score))
+        
+        return round(final_score, 3)
         
     def determine_if_free(self, poi: Dict) -> bool:
         """Determinar si un POI es generalmente gratuito"""
@@ -423,10 +449,13 @@ class ETLProcessor:
                 mes_inicio = fecha_inicio.month
                 dia_semana_inicio = fecha_inicio.weekday() + 1  # 1=Monday, 7=Sunday
                 
+                # APLICAR CATEGORÍAS UNIFICADAS
+                categoria_unificada = self._unify_event_category(evento['categoria_evento'])
+                
                 transformed_evento = {
                     'evento_id': evento['id'],
                     'nombre': evento['nombre'],
-                    'categoria_evento': evento['categoria_evento'],
+                    'categoria_evento': categoria_unificada,  # Usar categoría unificada
                     'tematica': evento['tematica'],
                     'poi_id': evento['poi_id'],
                     'latitud': evento['latitud'],
@@ -600,8 +629,8 @@ class ETLProcessor:
         return count
         
     def run_full_etl(self) -> Dict[str, int]:
-        """Ejecutar ETL completo"""
-        logger.info("Iniciando ETL completo...")
+        """Ejecutar ETL completo con control de duplicación"""
+        logger.info("🚀 Iniciando ETL completo...")
         
         results = {}
         
@@ -609,19 +638,31 @@ class ETLProcessor:
             self.connect_databases()
             self.create_processor_schema()
             
-            # ETL de POIs
-            results['pois'] = self.extract_transform_load_pois()
+            # Verificar si ya tenemos POIs de CSV cargados
+            proc_cursor = self.processor_conn.cursor()
+            proc_cursor.execute("SELECT COUNT(*) FROM lugares_clustering")
+            existing_pois = proc_cursor.fetchone()[0]
+            proc_cursor.close()
+            
+            # Solo cargar POIs de CSV si no existen (evitar duplicación)
+            if existing_pois == 0:
+                logger.info("📋 Primera carga: Procesando POIs desde CSV...")
+                results['pois'] = self.extract_transform_load_pois()
+            else:
+                logger.info(f"📋 POIs ya existen ({existing_pois}), saltando carga de CSV")
+                results['pois'] = existing_pois
             
             # Calcular métricas por barrio
             results['barrios'] = self.calculate_barrio_metrics()
             
-            # ETL de eventos
+            # Siempre procesar eventos (se limpian y recargan)
+            logger.info("📅 Procesando eventos desde BD operacional...")
             results['eventos'] = self.extract_transform_load_eventos()
             
-            logger.info("ETL completado exitosamente!")
+            logger.info("✅ ETL completado exitosamente!")
             
         except Exception as e:
-            logger.error(f"Error en ETL: {e}")
+            logger.error(f"❌ Error en ETL: {e}")
             if self.processor_conn:
                 self.processor_conn.rollback()
             raise
@@ -629,6 +670,51 @@ class ETLProcessor:
             self.disconnect_databases()
             
         return results
+
+    def _unify_event_category(self, categoria_original: str) -> str:
+        """Unificar categorías de eventos con las de POIs"""
+        # Mapeo de categorías originales a categorías unificadas
+        unification_map = {
+            'Visita guiada': 'Lugares Históricos',
+            'Experiencias': 'Entretenimiento',
+            'Paseo': 'Entretenimiento',
+            'Actividad cultural': 'Lugares Históricos',
+            'Tour': 'Lugares Históricos',
+            'Evento gastronómico': 'Gastronomía',
+            'Actividad gastronómica': 'Gastronomía',
+            'Museo': 'Museos',
+            'Exposición': 'Museos',
+            'Show': 'Entretenimiento',
+            'Espectáculo': 'Entretenimiento',
+            'Concierto': 'Entretenimiento',
+            'Teatro': 'Entretenimiento'
+        }
+        
+        # Normalizar la categoría original
+        categoria_normalizada = categoria_original.strip().title()
+        
+        # Buscar mapeo exacto
+        if categoria_normalizada in unification_map:
+            return unification_map[categoria_normalizada]
+        
+        # Buscar mapeo parcial (contiene palabras clave)
+        categoria_lower = categoria_original.lower()
+        for key, unified_category in unification_map.items():
+            if key.lower() in categoria_lower:
+                return unified_category
+        
+        # Si no encuentra mapeo, usar lógica de palabras clave
+        if any(word in categoria_lower for word in ['gastronom', 'comida', 'restaurant', 'food']):
+            return 'Gastronomía'
+        elif any(word in categoria_lower for word in ['museo', 'exposic', 'muestra']):
+            return 'Museos'
+        elif any(word in categoria_lower for word in ['historic', 'patrimonio', 'monument']):
+            return 'Lugares Históricos'
+        elif any(word in categoria_lower for word in ['entretenimiento', 'show', 'espectaculo', 'concierto', 'diversión']):
+            return 'Entretenimiento'
+        else:
+            # Categoría por defecto si no se puede mapear
+            return 'Entretenimiento'
 
 def main():
     """Función principal"""

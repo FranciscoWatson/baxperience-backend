@@ -5,6 +5,44 @@ import re
 from datetime import datetime, timedelta
 from urllib.parse import parse_qs, urlparse
 
+def mapear_categoria_unificada(categoria_original):
+    """
+    Mapea categorías originales del scraper a categorías unificadas
+    compatibles con el sistema de POIs.
+    """
+    mapeo = {
+        'Visita guiada': 'Lugares Históricos',
+        'Experiencias': 'Entretenimiento',
+        'Paseo': 'Entretenimiento',
+        'Teatro': 'Entretenimiento',
+        'Música': 'Entretenimiento',
+        'Danza': 'Entretenimiento',
+        'Arte': 'Arte y Cultura',
+        'Exposición': 'Arte y Cultura',
+        'Museo': 'Arte y Cultura',
+        'Cine': 'Entretenimiento',
+        'Gastronomía': 'Gastronomía',
+        'Feria': 'Entretenimiento',
+        'Festival': 'Entretenimiento',
+        'Deporte': 'Entretenimiento',
+        'Infantil': 'Entretenimiento',
+        'Familiar': 'Entretenimiento'
+    }
+    
+    # Buscar mapeo exacto o parcial
+    categoria_unificada = mapeo.get(categoria_original)
+    if categoria_unificada:
+        return categoria_unificada
+    
+    # Buscar coincidencias parciales (case insensitive)
+    categoria_lower = categoria_original.lower()
+    for original, unificada in mapeo.items():
+        if original.lower() in categoria_lower or categoria_lower in original.lower():
+            return unificada
+    
+    # Si no hay mapeo, categorizar por defecto
+    return 'Entretenimiento'
+
 def scrap_turismo():
     url = "https://turismo.buenosaires.gob.ar/es/que-hacer-en-la-ciudad"
     headers = {
@@ -222,7 +260,10 @@ def procesar_evento(actividad):
     # INFORMACIÓN BÁSICA
     evento['nombre'] = actividad.get('nombre_actividad', 'Sin título')
     evento['descripcion'] = limpiar_html(actividad.get('descripcion', ''))
-    evento['categoria_evento'] = actividad.get('categoria_actividad_filtro', '')
+    
+    # MAPEO DE CATEGORÍAS UNIFICADAS - Compatible con POIs
+    categoria_original = actividad.get('categoria_actividad_filtro', '')
+    evento['categoria_evento'] = mapear_categoria_unificada(categoria_original)
     evento['tematica'] = actividad.get('tematica_actividad_filtro', '')
     
     # UBICACIÓN

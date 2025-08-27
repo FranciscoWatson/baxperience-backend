@@ -276,109 +276,161 @@ class DataProcessorService:
             raise
     
     def _run_clustering(self) -> Dict[str, Any]:
-        """Ejecutar clustering"""
+        """Ejecutar clustering actualizado"""
         try:
-            logger.info("🧠 Ejecutando clustering real...")
+            logger.info("🧠 Ejecutando clustering actualizado...")
             
-            # Importar y ejecutar clustering real
-            try:
-                from clustering_processor import ClusteringProcessor
-                from csv_processor import DatabaseConfig
+            # Importar y ejecutar clustering
+            from clustering_processor import ClusteringProcessor
+            from csv_processor import DatabaseConfig
+            
+            # Crear instancia y ejecutar clustering completo
+            clustering_processor = ClusteringProcessor(DatabaseConfig.PROCESSOR_DB)
+            clustering_result = clustering_processor.run_full_clustering()
+            
+            if clustering_result.get('status') == 'success':
+                summary = clustering_result.get('summary', {})
+                logger.info(f"✅ Clustering completado exitosamente")
+                logger.info(f"   - POIs procesados: {summary.get('total_pois_processed', 0)}")
+                logger.info(f"   - Zonas turísticas: {summary.get('tourist_zones_detected', 0)}")
+                logger.info(f"   - Barrios analizados: {summary.get('neighborhoods_analyzed', 0)}")
                 
-                # Crear instancia con configuración de DB y ejecutar clustering
-                processor = ClusteringProcessor(DatabaseConfig.PROCESSOR_DB)
-                clustering_result = processor.run_full_clustering()
-                
-                logger.info(f"✅ Clustering real completado: {clustering_result}")
                 return {
-                    "algorithms_executed": clustering_result.get('algorithms_executed', []),
-                    "pois_processed": clustering_result.get('pois_processed', 0),
-                    "clusters_created": clustering_result.get('clusters_created', 0),
-                    "processing_time_seconds": clustering_result.get('processing_time', 0),
-                    "status": "completed",
-                    "clustering_details": clustering_result
+                    'clusters_created': summary.get('tourist_zones_detected', 0),
+                    'pois_processed': summary.get('total_pois_processed', 0),
+                    'status': 'success'
                 }
+            else:
+                logger.error(f"❌ Error en clustering: {clustering_result.get('message', 'Unknown error')}")
+                return {'clusters_created': 0, 'status': 'error', 'error': clustering_result.get('message')}
                 
-            except ImportError as e:
-                logger.warning(f"⚠️ No se pudo importar clustering real: {e}")
-                # Fallback a simulación
-                clustering_result = {
-                    "algorithms_executed": ["geographic", "category", "neighborhood", "tourist_zones"],
-                    "pois_processed": 175,
-                    "clusters_created": 12,
-                    "processing_time_seconds": 4.2,
-                    "status": "completed",
-                    "note": "Clustering simulado - módulo no disponible"
-                }
-                logger.info(f"✅ Clustering simulado completado: {clustering_result['clusters_created']} clusters creados")
-                return clustering_result
-            
         except Exception as e:
-            logger.error(f"❌ Error en clustering: {e}")
-            raise
+            logger.error(f"❌ Error ejecutando clustering: {e}")
+            import traceback
+            logger.error(f"❌ Traceback: {traceback.format_exc()}")
+            return {'clusters_created': 0, 'status': 'error', 'error': str(e)}
     
     def _insert_scraper_events(self, event_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Insertar eventos del scraper en la BD operacional"""
+        """Insertar eventos del scraper en BD operacional"""
         try:
-            logger.info("📥 Insertando eventos del scraper en BD operacional...")
+            # Verificar que tenemos eventos
+            data = event_data.get('data', {})
+            events = data.get('events', [])
             
-            # Validar que tengamos datos - CORREGIDO: buscar en 'events' no en 'eventos'
-            events_list = event_data.get('data', {}).get('events', [])
-            if not events_list:
-                logger.warning("No hay eventos para insertar")
-                return {
-                    "eventos_insertados": 0,
-                    "status": "no_events",
-                    "message": "No hay eventos en los datos recibidos"
-                }
+            if not events:
+                logger.warning("⚠️ No se encontraron eventos en el mensaje")
+                return {'eventos_insertados': 0, 'error': 'No events found'}
             
-            logger.info(f"📝 Procesando {len(events_list)} eventos del scraper...")
+            logger.info(f"📥 Insertando {len(events)} eventos del scraper...")
             
-            try:
-                from etl_to_processor import ETLProcessor
-                etl_processor = ETLProcessor()
-                
-                # Conectar a las bases de datos
-                etl_processor.connect_databases()
-                
-                # Crear estructura de datos compatible con insertar_eventos_desde_scraper
-                eventos_data = {
-                    'eventos': events_list,
-                    'metadata': event_data.get('data', {}).get('metadata', {})
-                }
-                
-                # Insertar eventos en BD operacional
-                eventos_insertados = etl_processor.insertar_eventos_desde_scraper(eventos_data)
-                
-                # Desconectar de las bases de datos
-                etl_processor.disconnect_databases()
-                
-                logger.info(f"✅ Eventos del scraper insertados: {eventos_insertados}")
-                return {
-                    "eventos_insertados": eventos_insertados,
-                    "status": "completed",
-                    "message": f"Se insertaron {eventos_insertados} eventos exitosamente"
-                }
-                
-            except ImportError as e:
-                logger.warning(f"⚠️ No se pudo importar ETL para eventos: {e}")
-                return {
-                    "eventos_insertados": 0,
-                    "status": "module_error",
-                    "error": "Módulo ETL no disponible",
-                    "details": str(e)
-                }
-                
+            # Conectar a BD operacional
+            from csv_processor import DatabaseConfig
+            import psycopg2
+            
+            op_conn = psycopg2.connect(**DatabaseConfig.OPERATIONAL_DB)
+            op_cursor = op_conn.cursor()
+            
+            # PASO 1: LIMPIAR EVENTOS ANTIGUOS
+            logger.info("🧹 Limpiando eventos antiguos...")
+            op_cursor.execute("TRUNCATE TABLE eventos")
+            eventos_eliminados = op_cursor.rowcount
+            logger.info(f"�️ Eliminados {eventos_eliminados} eventos antiguos")
+            
+            # PASO 2: Insertar nuevos eventos
+            insert_count = 0
+            
+            # MAPEO DE CATEGORÍAS UNIFICADAS
+            categoria_mapping = {
+                'Visita guiada': 'Lugares Históricos',
+                'Experiencias': 'Entretenimiento', 
+                'Paseo': 'Entretenimiento'
+            }
+            
+            for event in events:
+                try:
+                    # Procesar datos del evento
+                    nombre = event.get('nombre', 'Sin nombre')[:255]
+                    descripcion = event.get('descripcion', '')
+                    categoria_original = event.get('categoria', 'Evento')[:100]
+                    
+                    # APLICAR MAPEO DE CATEGORÍAS UNIFICADAS
+                    categoria = categoria_mapping.get(categoria_original, categoria_original)
+                    
+                    tematica = event.get('tematica', '')[:100]
+                    
+                    # Ubicación
+                    latitud = None
+                    longitud = None
+                    if event.get('coordenadas'):
+                        try:
+                            coords = event['coordenadas']
+                            if isinstance(coords, list) and len(coords) >= 2:
+                                latitud = float(coords[0])
+                                longitud = float(coords[1])
+                        except (ValueError, TypeError, IndexError):
+                            pass
+                    
+                    barrio = event.get('barrio', '')[:100]
+                    direccion = event.get('direccion', '')
+                    
+                    # Fechas y horarios
+                    fecha_inicio = event.get('fecha_inicio', '2025-08-27')  # Default mañana
+                    fecha_fin = event.get('fecha_fin')
+                    hora_inicio = event.get('hora_inicio')
+                    hora_fin = event.get('hora_fin')
+                    dias_semana = event.get('dias_semana', '')[:7]
+                    
+                    # URLs y contacto
+                    url_evento = event.get('url', '')[:500]
+                    telefono = event.get('telefono', '')[:50]
+                    email = event.get('email', '')[:255]
+                    
+                    # Insertar evento
+                    insert_query = """
+                    INSERT INTO eventos (
+                        nombre, descripcion, categoria_evento, tematica,
+                        latitud, longitud, barrio, direccion_evento,
+                        fecha_inicio, fecha_fin, hora_inicio, hora_fin, dias_semana,
+                        url_evento, telefono_contacto, email_contacto,
+                        fecha_scraping, url_fuente
+                    ) VALUES (
+                        %s, %s, %s, %s,
+                        %s, %s, %s, %s,
+                        %s, %s, %s, %s, %s,
+                        %s, %s, %s,
+                        CURRENT_TIMESTAMP, %s
+                    )
+                    """
+                    
+                    op_cursor.execute(insert_query, (
+                        nombre, descripcion, categoria, tematica,
+                        latitud, longitud, barrio, direccion,
+                        fecha_inicio, fecha_fin, hora_inicio, hora_fin, dias_semana,
+                        url_evento, telefono, email,
+                        'scraper-turismo'
+                    ))
+                    
+                    insert_count += 1
+                    
+                except Exception as e:
+                    logger.warning(f"⚠️ Error insertando evento individual: {e}")
+                    continue
+            
+            # Commit cambios
+            op_conn.commit()
+            op_cursor.close()
+            op_conn.close()
+            
+            logger.info(f"✅ Eventos insertados exitosamente: {insert_count}")
+            return {
+                'eventos_insertados': insert_count,
+                'eventos_eliminados': eventos_eliminados,
+                'status': 'success'
+            }
+            
         except Exception as e:
             logger.error(f"❌ Error insertando eventos del scraper: {e}")
-            import traceback
-            logger.error(f"❌ Traceback completo: {traceback.format_exc()}")
-            return {
-                "eventos_insertados": 0,
-                "status": "error",
-                "error": str(e),
-                "error_type": type(e).__name__
-            }
+            return {'eventos_insertados': 0, 'error': str(e)}
     
     def _publish_completion_events(self, etl_result: Dict[str, Any], scraper_events_result: Dict[str, Any], clustering_result: Dict[str, Any]):
         """Publicar eventos de completado"""

@@ -461,6 +461,7 @@ class ClusteringProcessor:
             }
             
             logger.info("Pipeline de clustering completado exitosamente")
+            results['status'] = 'success'  # Agregar status de éxito
             return results
             
         except Exception as e:
