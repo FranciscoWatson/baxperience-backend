@@ -37,6 +37,7 @@ class RecommendationService:
     
     def __init__(self):
         self.conn = None
+        self.operational_conn = None
         self.models = {}
         self.scalers = {}
         
@@ -49,11 +50,23 @@ class RecommendationService:
             logger.error(f"Error conectando a BD: {e}")
             raise
     
+    def connect_operational_database(self):
+        """Conectar a BD Operacional (opcional)"""
+        try:
+            self.operational_conn = psycopg2.connect(**DatabaseConfig.OPERATIONAL_DB)
+            logger.info("Conectado a BD Operacional para guardado completo")
+        except Exception as e:
+            logger.warning(f"No se pudo conectar a BD Operacional: {e}")
+            self.operational_conn = None
+    
     def disconnect_database(self):
         """Desconectar de BD"""
         if self.conn:
             self.conn.close()
             logger.info("Desconectado de BD Data Processor")
+        if self.operational_conn:
+            self.operational_conn.close()
+            logger.info("Desconectado de BD Operacional")
     
     def load_ml_models(self):
         """Cargar modelos ML entrenados desde BD"""
@@ -152,18 +165,36 @@ class RecommendationService:
                 'evento' as item_type
             FROM eventos_clustering 
             WHERE activo = true 
-            AND fecha_inicio >= CURRENT_DATE
-            AND latitud IS NOT NULL 
-            AND longitud IS NOT NULL
             """
+            
+            # Filtros más flexibles para eventos
+            # No filtrar por fecha para tener más eventos disponibles para testing
+            # En producción se puede activar: AND fecha_inicio >= CURRENT_DATE - INTERVAL '7 days'
+            
+            # Filtrar eventos por categorías si están especificadas
+            if categorias:
+                # Mapear categorías de usuario a categorías de eventos
+                categorias_eventos = []
+                for cat in categorias:
+                    if cat in ['Entretenimiento', 'Museos', 'Gastronomía']:
+                        categorias_eventos.append('Entretenimiento')  # La mayoría son entretenimiento
+                    elif cat in ['Lugares Históricos', 'Monumentos']:
+                        categorias_eventos.append('Entretenimiento')  # También pueden incluir eventos culturales
+                
+                if categorias_eventos:
+                    categorias_sql = "', '".join(set(categorias_eventos))
+                    eventos_query += f" AND categoria_evento IN ('{categorias_sql}')"
             
             # Filtrar eventos por zona
             if zona and zona.strip():
                 eventos_query += f" AND (barrio ILIKE '%{zona}%' OR barrio IS NULL)"
             
             eventos_query += """
-            ORDER BY fecha_inicio ASC, RANDOM()
-            LIMIT 50
+            ORDER BY 
+                CASE WHEN fecha_inicio IS NOT NULL THEN 0 ELSE 1 END,
+                fecha_inicio ASC, 
+                RANDOM()
+            LIMIT 100
             """
             
             cursor.execute(eventos_query)
@@ -366,7 +397,7 @@ class RecommendationService:
     
     def optimize_route_with_events(self, items_selected: List[Dict], duracion_horas: int) -> List[Dict]:
         """
-        Optimizar ruta incluyendo eventos con consideraciones temporales
+        Optimizar ruta incluyendo eventos con consideraciones temporales y geográficas
         """
         logger.info("Optimizando ruta con POIs y eventos...")
         
@@ -377,66 +408,290 @@ class RecommendationService:
         pois = [item for item in items_selected if item.get('item_type') != 'evento']
         eventos = [item for item in items_selected if item.get('item_type') == 'evento']
         
-        # Agrupar POIs por categoría
-        categorias_pois = {}
-        for poi in pois:
-            cat = poi.get('categoria', 'General')
-            if cat not in categorias_pois:
-                categorias_pois[cat] = []
-            categorias_pois[cat].append(poi)
+        logger.info(f"Optimizando: {len(pois)} POIs y {len(eventos)} eventos")
         
-        # Crear itinerario balanceado
+        # Crear itinerario inicial
         itinerario = []
-        max_actividades = min(duracion_horas // 2, 8)  # 2 horas por actividad
+        max_actividades = min(duracion_horas // 2, 10)  # Más actividades posibles
         
-        # Insertar eventos primero (tienen horarios específicos)
+        # PASO 1: Insertar eventos con sus horarios reales (si los tienen)
         eventos_insertados = 0
-        for evento in eventos[:2]:  # Máximo 2 eventos por día
-            hora_inicio = 10 + (eventos_insertados * 3)  # Espaciar eventos
-            if hora_inicio >= 17:  # No después de las 17
-                break
-            
-            actividad = self._create_activity_from_item(evento, hora_inicio, 120, eventos_insertados + 1)
-            itinerario.append(actividad)
-            eventos_insertados += 1
-            max_actividades -= 1
+        eventos_programados = []
         
-        # Llenar con POIs
-        if max_actividades > 0 and categorias_pois:
-            categorias_list = list(categorias_pois.keys())
-            actividades_agregadas = eventos_insertados
-            
-            for i in range(max_actividades):
-                categoria_idx = i % len(categorias_list)
-                categoria = categorias_list[categoria_idx]
+        for evento in eventos[:3]:  # Máximo 3 eventos por día
+            if eventos_insertados >= max_actividades // 3:  # No más del 33% eventos
+                break
                 
-                if categorias_pois[categoria]:
-                    poi = categorias_pois[categoria].pop(0)
-                    
-                    # Encontrar hora libre (evitar conflictos con eventos)
-                    hora_inicio = self._find_free_time_slot(itinerario, 9, 18)
-                    if hora_inicio is None:
-                        break
-                    
-                    # Determinar duración según categoría
-                    if poi.get('categoria') == 'Gastronomía':
-                        duracion = 90  # 1.5 horas para comer
+            # Usar horario real del evento si está disponible
+            hora_evento = self._extract_event_time(evento)
+            if hora_evento is None:
+                hora_evento = 10 + (eventos_insertados * 3)  # Distribuir si no hay horario
+            
+            if hora_evento >= 18:  # No después de las 18
+                continue
+                
+            actividad = self._create_activity_from_item(evento, hora_evento, 120, eventos_insertados + 1)
+            eventos_programados.append(actividad)
+            eventos_insertados += 1
+        
+        # PASO 2: Optimizar POIs geográficamente
+        pois_optimizados = self._optimize_geographic_route(pois, max_actividades - eventos_insertados)
+        
+        # PASO 3: Intercalar eventos y POIs optimizando horarios
+        itinerario_final = self._merge_events_and_pois(eventos_programados, pois_optimizados, duracion_horas)
+        
+        logger.info(f"Ruta optimizada: {len(itinerario_final)} actividades ({eventos_insertados} eventos)")
+        return itinerario_final
+    
+    def _extract_event_time(self, evento: Dict) -> int:
+        """
+        Extraer hora del evento si está disponible
+        """
+        hora_inicio = evento.get('hora_inicio')
+        if hora_inicio:
+            try:
+                if isinstance(hora_inicio, str):
+                    # Formatos posibles: "10:00", "10:00:00", "10"
+                    if ':' in hora_inicio:
+                        hour = int(hora_inicio.split(':')[0])
                     else:
-                        duracion = 120  # 2 horas para visitas
+                        hour = int(hora_inicio)
                     
-                    actividad = self._create_activity_from_item(poi, hora_inicio, duracion, actividades_agregadas + 1)
-                    itinerario.append(actividad)
-                    actividades_agregadas += 1
+                    # Validar rango
+                    if 8 <= hour <= 22:
+                        return hour
+            except (ValueError, TypeError):
+                pass
+        return None
+    
+    def _optimize_geographic_route(self, pois: List[Dict], max_pois: int) -> List[Dict]:
+        """
+        Optimizar POIs por proximidad geográfica usando algoritmo greedy
+        """
+        if not pois or max_pois <= 0:
+            return []
+        
+        # Filtrar POIs con coordenadas válidas
+        pois_con_coords = []
+        for poi in pois:
+            lat = poi.get('latitud')
+            lng = poi.get('longitud')
+            if lat is not None and lng is not None:
+                try:
+                    poi['lat_float'] = float(lat)
+                    poi['lng_float'] = float(lng)
+                    pois_con_coords.append(poi)
+                except (ValueError, TypeError):
+                    pass
+        
+        if not pois_con_coords:
+            # Si no hay coordenadas, usar los primeros POIs
+            return pois[:max_pois]
+        
+        # Algoritmo greedy para ruta más corta
+        ruta_optimizada = []
+        pois_disponibles = pois_con_coords[:]
+        
+        # Empezar con el POI con mejor score
+        pois_disponibles.sort(key=lambda x: x.get('score_personalizado', 0), reverse=True)
+        actual = pois_disponibles.pop(0)
+        ruta_optimizada.append(actual)
+        
+        # Añadir POIs más cercanos iterativamente
+        while len(ruta_optimizada) < max_pois and pois_disponibles:
+            lat_actual = actual['lat_float']
+            lng_actual = actual['lng_float']
+            
+            # Encontrar el POI más cercano
+            mejor_poi = None
+            menor_distancia = float('inf')
+            
+            for poi in pois_disponibles:
+                distancia = self._calculate_distance(
+                    lat_actual, lng_actual,
+                    poi['lat_float'], poi['lng_float']
+                )
+                
+                # Ponderar distancia vs score (70% distancia, 30% score)
+                score_normalizado = poi.get('score_personalizado', 0) / 2.0  # Normalizar score
+                factor_combinado = (distancia * 0.7) - (score_normalizado * 0.3)
+                
+                if factor_combinado < menor_distancia:
+                    menor_distancia = factor_combinado
+                    mejor_poi = poi
+            
+            if mejor_poi:
+                ruta_optimizada.append(mejor_poi)
+                pois_disponibles.remove(mejor_poi)
+                actual = mejor_poi
+        
+        logger.info(f"Ruta geográfica optimizada: {len(ruta_optimizada)} POIs")
+        return ruta_optimizada
+    
+    def _calculate_distance(self, lat1: float, lng1: float, lat2: float, lng2: float) -> float:
+        """
+        Calcular distancia entre dos puntos usando fórmula haversine simplificada
+        """
+        import math
+        
+        # Convertir grados a radianes
+        lat1_rad = math.radians(lat1)
+        lng1_rad = math.radians(lng1)
+        lat2_rad = math.radians(lat2)
+        lng2_rad = math.radians(lng2)
+        
+        # Diferencias
+        dlat = lat2_rad - lat1_rad
+        dlng = lng2_rad - lng1_rad
+        
+        # Fórmula haversine
+        a = math.sin(dlat/2)**2 + math.cos(lat1_rad) * math.cos(lat2_rad) * math.sin(dlng/2)**2
+        c = 2 * math.asin(math.sqrt(a))
+        
+        # Radio de la Tierra en km
+        r = 6371
+        
+        return r * c
+    
+    def _merge_events_and_pois(self, eventos: List[Dict], pois: List[Dict], duracion_horas: int) -> List[Dict]:
+        """
+        Combinar eventos y POIs en un itinerario temporal coherente
+        """
+        itinerario_final = []
+        
+        # Convertir POIs a actividades con horarios
+        actividades_pois = []
+        hora_actual = 9  # Empezar a las 9 AM
+        
+        for i, poi in enumerate(pois):
+            # Determinar duración según categoría
+            if poi.get('categoria') == 'Gastronomía':
+                duracion = 90  # 1.5 horas para comer
+                # Programar comidas en horarios apropiados
+                if len(actividades_pois) == 0:
+                    hora_actual = 12  # Primera comida al mediodía
+                elif len(actividades_pois) >= 3:
+                    hora_actual = max(hora_actual, 19)  # Cena
+            else:
+                duracion = 120  # 2 horas para visitas
+            
+            # Evitar conflictos con eventos ya programados
+            while self._hour_conflicts_with_events(hora_actual, duracion, eventos):
+                hora_actual += 1
+                if hora_actual >= 20:  # No más allá de las 8 PM
+                    break
+            
+            if hora_actual < 20:
+                actividad = self._create_activity_from_item(poi, hora_actual, duracion, i + 1)
+                actividades_pois.append(actividad)
+                hora_actual += (duracion // 60) + 1  # +1 hora de buffer
+        
+        # Combinar eventos y POIs
+        todas_actividades = eventos + actividades_pois
         
         # Ordenar por horario
-        itinerario.sort(key=lambda x: x['horario_inicio'])
+        todas_actividades.sort(key=lambda x: x['horario_inicio'])
         
         # Reordenar números de orden
-        for i, actividad in enumerate(itinerario):
+        for i, actividad in enumerate(todas_actividades):
             actividad['orden_visita'] = i + 1
         
-        logger.info(f"Ruta optimizada: {len(itinerario)} actividades ({eventos_insertados} eventos)")
-        return itinerario
+        return todas_actividades
+    
+    def _hour_conflicts_with_events(self, hora: int, duracion_min: int, eventos: List[Dict]) -> bool:
+        """
+        Verificar si una hora conflicta con eventos programados
+        """
+        hora_fin = hora + (duracion_min // 60)
+        
+        for evento in eventos:
+            evento_inicio = int(evento['horario_inicio'].split(':')[0])
+            evento_fin = int(evento['horario_fin'].split(':')[0])
+            
+            # Verificar solapamiento
+            if not (hora_fin <= evento_inicio or hora >= evento_fin):
+                return True
+        
+        return False
+    
+    def _select_balanced_items(self, pois_scored: List[Dict], eventos_scored: List[Dict], user_prefs: Dict) -> List[Dict]:
+        """
+        Seleccionar items balanceando categorías preferidas y eventos
+        """
+        logger.info("Seleccionando items balanceados...")
+        
+        categorias_preferidas = user_prefs.get('categorias_preferidas', [])
+        duracion_horas = user_prefs.get('duracion_preferida', 8)
+        
+        # Calcular distribución objetivo
+        total_items = min(duracion_horas // 2 + 2, 12)  # Entre 4-12 items
+        max_eventos = min(3, max(1, total_items // 4))  # 25% máximo eventos, mínimo 1
+        items_pois = total_items - max_eventos
+        
+        logger.info(f"Objetivo: {total_items} items total ({items_pois} POIs + {max_eventos} eventos)")
+        
+        items_seleccionados = []
+        
+        # PASO 1: Seleccionar eventos (tienen prioridad por ser únicos)
+        eventos_elegidos = eventos_scored[:max_eventos]
+        items_seleccionados.extend(eventos_elegidos)
+        
+        logger.info(f"Eventos seleccionados: {len(eventos_elegidos)}")
+        
+        # PASO 2: Seleccionar POIs balanceando categorías preferidas
+        if categorias_preferidas and len(categorias_preferidas) > 1:
+            # Múltiples categorías: distribuir equitativamente
+            pois_por_categoria = self._distribute_pois_by_category(
+                pois_scored, categorias_preferidas, items_pois
+            )
+            items_seleccionados.extend(pois_por_categoria)
+        else:
+            # Una sola categoría o sin preferencias: tomar los mejores
+            items_seleccionados.extend(pois_scored[:items_pois])
+        
+        logger.info(f"Items finales seleccionados: {len(items_seleccionados)} ({len([i for i in items_seleccionados if i.get('item_type') == 'evento'])} eventos)")
+        
+        return items_seleccionados
+    
+    def _distribute_pois_by_category(self, pois_scored: List[Dict], categorias_preferidas: List[str], total_pois: int) -> List[Dict]:
+        """
+        Distribuir POIs equitativamente entre categorías preferidas
+        """
+        # Agrupar POIs por categoría
+        pois_por_categoria = {}
+        for poi in pois_scored:
+            categoria = poi.get('categoria', 'Otros')
+            if categoria not in pois_por_categoria:
+                pois_por_categoria[categoria] = []
+            pois_por_categoria[categoria].append(poi)
+        
+        # Calcular distribución por categoría
+        categorias_disponibles = [cat for cat in categorias_preferidas if cat in pois_por_categoria]
+        if not categorias_disponibles:
+            # Si no hay POIs de las categorías preferidas, usar todos
+            return pois_scored[:total_pois]
+        
+        pois_por_cat = total_pois // len(categorias_disponibles)
+        pois_extra = total_pois % len(categorias_disponibles)
+        
+        pois_seleccionados = []
+        
+        for i, categoria in enumerate(categorias_disponibles):
+            # Asignar POIs base + extras a las primeras categorías
+            cantidad = pois_por_cat + (1 if i < pois_extra else 0)
+            categoria_pois = pois_por_categoria[categoria][:cantidad]
+            pois_seleccionados.extend(categoria_pois)
+            
+            logger.info(f"Categoría '{categoria}': {len(categoria_pois)} POIs seleccionados")
+        
+        # Si no llegamos al total, completar con mejores POIs restantes
+        if len(pois_seleccionados) < total_pois:
+            pois_usados = set(poi['poi_id'] for poi in pois_seleccionados)
+            pois_restantes = [poi for poi in pois_scored if poi['poi_id'] not in pois_usados]
+            faltantes = total_pois - len(pois_seleccionados)
+            pois_seleccionados.extend(pois_restantes[:faltantes])
+        
+        return pois_seleccionados
     
     def _create_activity_from_item(self, item: Dict, hora_inicio: int, duracion_minutos: int, orden: int) -> Dict:
         """
@@ -526,27 +781,10 @@ class RecommendationService:
             # 4. Calcular scores para eventos
             eventos_scored = self.calculate_event_scores(eventos_candidatos, user_prefs)
             
-            # 5. Combinar y seleccionar mejores items
-            all_items = pois_scored + eventos_scored
-            all_items.sort(key=lambda x: x['score_personalizado'], reverse=True)
-            
-            # Seleccionar mix balanceado (70% POIs, 30% eventos)
-            total_items = min(12, len(all_items))
-            max_eventos = min(4, len(eventos_scored))  # Máximo 4 eventos
-            
-            items_seleccionados = []
-            eventos_agregados = 0
-            
-            for item in all_items:
-                if len(items_seleccionados) >= total_items:
-                    break
-                
-                if item.get('item_type') == 'evento':
-                    if eventos_agregados < max_eventos:
-                        items_seleccionados.append(item)
-                        eventos_agregados += 1
-                else:
-                    items_seleccionados.append(item)
+            # 5. Selección inteligente con balance de categorías y eventos
+            items_seleccionados = self._select_balanced_items(
+                pois_scored, eventos_scored, user_prefs
+            )
             
             # 6. Optimizar ruta
             actividades = self.optimize_route_with_events(items_seleccionados, user_prefs.get('duracion_preferida', 8))
@@ -573,14 +811,16 @@ class RecommendationService:
                     'total_eventos_analizados': len(eventos_candidatos),
                     'eventos_incluidos': len([act for act in actividades if act.get('item_type') == 'evento']),
                     'algoritmos_usados': list(self.models.keys()),
-                    'version_modelo': '1.1'
+                    'version_modelo': '1.2'
                 }
             }
             
-            # 9. Guardar itinerario (opcional)
+            # 9. Guardar itinerario (temporal y completo)
             self.save_itinerary(itinerario)
+            # self.save_itinerary_to_operational_db(itinerario)
             
-            logger.info(f"Itinerario generado exitosamente: {len(actividades)} actividades ({eventos_agregados} eventos)")
+            eventos_en_itinerario = len([act for act in actividades if act.get('item_type') == 'evento'])
+            logger.info(f"Itinerario generado exitosamente: {len(actividades)} actividades ({eventos_en_itinerario} eventos)")
             return itinerario
             
         except Exception as e:
@@ -627,7 +867,7 @@ class RecommendationService:
         }
     
     def save_itinerary(self, itinerario: Dict):
-        """Guardar itinerario en BD (opcional)"""
+        """Guardar itinerario en BD (temporal para clustering)"""
         cursor = self.conn.cursor()
         
         try:
@@ -667,6 +907,87 @@ class RecommendationService:
         except Exception as e:
             self.conn.rollback()
             logger.error(f"Error guardando itinerario: {e}")
+        finally:
+            cursor.close()
+    
+    def save_itinerary_to_operational_db(self, itinerario: Dict):
+        """
+        Guardar itinerario completo en la BD operacional
+        Incluye POIs y eventos en itinerario_actividades
+        """
+        if not hasattr(self, 'operational_conn') or not self.operational_conn:
+            logger.warning("No hay conexión a BD operacional. Saltando guardado completo.")
+            return
+            
+        cursor = self.operational_conn.cursor()
+        
+        try:
+            # 1. Insertar itinerario principal
+            insert_itinerario = """
+            INSERT INTO itinerarios (
+                usuario_id, nombre, descripcion, fecha_inicio, fecha_fin,
+                estado, distancia_total_km, tiempo_estimado_horas
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            RETURNING id
+            """
+            
+            cursor.execute(insert_itinerario, (
+                itinerario['usuario_id'],
+                f"Itinerario BAX {itinerario['itinerario_id']}",
+                f"Itinerario generado automáticamente para {itinerario.get('parametros', {}).get('tipo_compania', 'usuario')}",
+                itinerario.get('fecha_inicio', datetime.now().date()),
+                itinerario.get('fecha_fin', datetime.now().date()),
+                'planificado',
+                itinerario.get('distancia_total_km', 0),
+                itinerario.get('tiempo_total_horas', 0)
+            ))
+            
+            itinerario_bd_id = cursor.fetchone()[0]
+            logger.info(f"Itinerario BD creado con ID: {itinerario_bd_id}")
+            
+            # 2. Insertar actividades (POIs y eventos)
+            insert_actividad = """
+            INSERT INTO itinerario_actividades (
+                itinerario_id, poi_id, evento_id, tipo_actividad,
+                dia_visita, orden_en_dia, hora_inicio_planificada, hora_fin_planificada,
+                tiempo_estimado_minutos, notas_planificacion
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """
+            
+            for i, actividad in enumerate(itinerario.get('actividades', []), 1):
+                # Determinar si es POI o evento
+                if actividad.get('item_type') == 'evento':
+                    poi_id = None
+                    evento_id = actividad.get('evento_id') or actividad.get('id')
+                    tipo_actividad = 'evento'
+                else:
+                    poi_id = actividad.get('poi_id') or actividad.get('id')
+                    evento_id = None
+                    tipo_actividad = 'poi'
+                
+                # Extraer horarios
+                horario_inicio = actividad.get('horario_inicio')
+                horario_fin = actividad.get('horario_fin')
+                
+                cursor.execute(insert_actividad, (
+                    itinerario_bd_id,
+                    poi_id,
+                    evento_id,
+                    tipo_actividad,
+                    1,  # dia_visita - por ahora todos en día 1
+                    i,  # orden_en_dia
+                    horario_inicio,
+                    horario_fin,
+                    actividad.get('duracion_minutos', 90),
+                    f"{tipo_actividad.title()}: {actividad.get('nombre', 'Sin nombre')}"
+                ))
+            
+            self.operational_conn.commit()
+            logger.info(f"Itinerario completo guardado en BD operacional: {len(itinerario.get('actividades', []))} actividades")
+            
+        except Exception as e:
+            self.operational_conn.rollback()
+            logger.error(f"Error guardando itinerario completo: {e}")
         finally:
             cursor.close()
     
@@ -725,6 +1046,7 @@ def generate_itinerary_request(user_id: int, request_data: Dict) -> Dict:
     
     try:
         service.connect_database()
+        service.connect_operational_database()  # Conexión opcional
         service.load_ml_models()
         
         result = service.generate_itinerary(user_id, request_data)

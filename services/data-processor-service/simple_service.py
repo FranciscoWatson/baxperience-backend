@@ -321,23 +321,20 @@ class DataProcessorService:
                 logger.warning("⚠️ No se encontraron eventos en el mensaje")
                 return {'eventos_insertados': 0, 'error': 'No events found'}
             
-            logger.info(f"📥 Insertando {len(events)} eventos del scraper...")
+            logger.info(f"📥 Procesando {len(events)} eventos del scraper...")
             
             # Conectar a BD operacional
             from csv_processor import DatabaseConfig
             import psycopg2
+            import hashlib
             
             op_conn = psycopg2.connect(**DatabaseConfig.OPERATIONAL_DB)
             op_cursor = op_conn.cursor()
             
-            # PASO 1: LIMPIAR EVENTOS ANTIGUOS
-            logger.info("🧹 Limpiando eventos antiguos...")
-            op_cursor.execute("TRUNCATE TABLE eventos")
-            eventos_eliminados = op_cursor.rowcount
-            logger.info(f"�️ Eliminados {eventos_eliminados} eventos antiguos")
-            
-            # PASO 2: Insertar nuevos eventos
-            insert_count = 0
+            # Obtener hashes de eventos existentes (activos e inactivos) para verificación rápida
+            op_cursor.execute("SELECT hash_evento FROM eventos")
+            existing_hashes = {row[0] for row in op_cursor.fetchall()}
+            logger.info(f"ℹ️ Encontrados {len(existing_hashes)} hashes de eventos existentes en la base de datos")
             
             # MAPEO DE CATEGORÍAS UNIFICADAS
             categoria_mapping = {
@@ -345,6 +342,10 @@ class DataProcessorService:
                 'Experiencias': 'Entretenimiento', 
                 'Paseo': 'Entretenimiento'
             }
+            
+            # Contadores
+            insert_count = 0
+            skip_count = 0
             
             for event in events:
                 try:
@@ -385,6 +386,25 @@ class DataProcessorService:
                     telefono = event.get('telefono', '')[:50]
                     email = event.get('email', '')[:255]
                     
+                    # Generar un hash único para el evento basado en campos clave
+                    # Incluimos más campos para garantizar unicidad
+                    hash_input = f"{nombre}|{fecha_inicio}|{hora_inicio}|{barrio}|{direccion}|{url_evento}"
+                    hash_evento = hashlib.md5(hash_input.encode('utf-8')).hexdigest()
+                    
+                    # Verificar si el hash ya existe en nuestra lista de hashes existentes
+                    if hash_evento in existing_hashes:
+                        skip_count += 1
+                        continue
+                    
+                    # Como paso adicional, verificamos por nombre y fecha para mayor seguridad
+                    op_cursor.execute(
+                        "SELECT id FROM eventos WHERE nombre = %s AND fecha_inicio = %s AND (barrio = %s OR %s IS NULL)",
+                        (nombre, fecha_inicio, barrio, barrio)
+                    )
+                    if op_cursor.fetchone():
+                        skip_count += 1
+                        continue
+                    
                     # Insertar evento
                     insert_query = """
                     INSERT INTO eventos (
@@ -392,13 +412,13 @@ class DataProcessorService:
                         latitud, longitud, barrio, direccion_evento,
                         fecha_inicio, fecha_fin, hora_inicio, hora_fin, dias_semana,
                         url_evento, telefono_contacto, email_contacto,
-                        fecha_scraping, url_fuente
+                        fecha_scraping, url_fuente, hash_evento
                     ) VALUES (
                         %s, %s, %s, %s,
                         %s, %s, %s, %s,
                         %s, %s, %s, %s, %s,
                         %s, %s, %s,
-                        CURRENT_TIMESTAMP, %s
+                        CURRENT_TIMESTAMP, %s, %s
                     )
                     """
                     
@@ -407,9 +427,11 @@ class DataProcessorService:
                         latitud, longitud, barrio, direccion,
                         fecha_inicio, fecha_fin, hora_inicio, hora_fin, dias_semana,
                         url_evento, telefono, email,
-                        'scraper-turismo'
+                        'scraper-turismo', hash_evento
                     ))
                     
+                    # Agregar el hash a nuestro conjunto para evitar duplicados en el mismo lote
+                    existing_hashes.add(hash_evento)
                     insert_count += 1
                     
                 except Exception as e:
@@ -421,15 +443,17 @@ class DataProcessorService:
             op_cursor.close()
             op_conn.close()
             
-            logger.info(f"✅ Eventos insertados exitosamente: {insert_count}")
+            logger.info(f"✅ Eventos insertados exitosamente: {insert_count}, omitidos (duplicados): {skip_count}")
             return {
                 'eventos_insertados': insert_count,
-                'eventos_eliminados': eventos_eliminados,
+                'eventos_omitidos': skip_count,
                 'status': 'success'
             }
             
         except Exception as e:
             logger.error(f"❌ Error insertando eventos del scraper: {e}")
+            import traceback
+            logger.error(f"❌ Traceback: {traceback.format_exc()}")
             return {'eventos_insertados': 0, 'error': str(e)}
     
     def _publish_completion_events(self, etl_result: Dict[str, Any], scraper_events_result: Dict[str, Any], clustering_result: Dict[str, Any]):

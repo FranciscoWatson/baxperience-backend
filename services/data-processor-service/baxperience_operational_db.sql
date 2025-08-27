@@ -24,7 +24,7 @@ CREATE TABLE categorias (
 );
 
 -- Insertar categorías base
-INSERT INTO categorias (nombre, descripcion) VALUES 
+INSERT INTO categorias (nombre, descripcion) VALUES
 ('Museos', 'Espacios de exhibición patrimonial y cultural'),
 ('Gastronomía', 'Restaurantes, cafés, bares y espacios gastronómicos'),
 ('Monumentos', 'Monumentos históricos y obras de arte público'),
@@ -48,14 +48,14 @@ CREATE TABLE subcategorias (
 );
 
 -- Insertar subcategorías para museos
-INSERT INTO subcategorias (categoria_id, nombre, descripcion) VALUES 
+INSERT INTO subcategorias (categoria_id, nombre, descripcion) VALUES
 (1, 'Museos de Arte', 'Museos especializados en arte y cultura visual'),
 (1, 'Museos de Historia', 'Museos de historia argentina e internacional'),
 (1, 'Museos de Ciencia', 'Museos de ciencias naturales y tecnología'),
 (1, 'Museos Especializados', 'Museos temáticos y especializados');
 
 -- Insertar subcategorías para gastronomía
-INSERT INTO subcategorias (categoria_id, nombre, descripcion) VALUES 
+INSERT INTO subcategorias (categoria_id, nombre, descripcion) VALUES
 (2, 'Restaurante', 'Restaurantes de comida completa'),
 (2, 'Café', 'Cafeterías y espacios de café'),
 (2, 'Bar', 'Bares y espacios de bebidas'),
@@ -65,13 +65,13 @@ INSERT INTO subcategorias (categoria_id, nombre, descripcion) VALUES
 (2, 'Comida Internacional', 'Restaurantes de cocina internacional');
 
 -- Insertar subcategorías para monumentos
-INSERT INTO subcategorias (categoria_id, nombre, descripcion) VALUES 
+INSERT INTO subcategorias (categoria_id, nombre, descripcion) VALUES
 (3, 'Monumento Histórico', 'Monumentos de importancia histórica'),
 (3, 'Obra de Arte Público', 'Esculturas y arte en espacios públicos'),
 (3, 'Plazas y Espacios', 'Plazas con monumentos significativos');
 
 -- Insertar subcategorías para entretenimiento
-INSERT INTO subcategorias (categoria_id, nombre, descripcion) VALUES 
+INSERT INTO subcategorias (categoria_id, nombre, descripcion) VALUES
 (5, 'Salas de Cine', 'Complejos cinematográficos'),
 (5, 'Teatros', 'Teatros y espacios escénicos'),
 (5, 'Centros Culturales', 'Espacios culturales multidisciplinarios');
@@ -219,12 +219,56 @@ CREATE TABLE itinerarios (
 );
 
 -- =================================================================
--- TABLA: ITINERARIO_POIS
+-- TABLA: EVENTOS
 -- =================================================================
-CREATE TABLE itinerario_pois (
+CREATE TABLE eventos (
+    id SERIAL PRIMARY KEY,
+
+    nombre VARCHAR(255) NOT NULL,
+    descripcion TEXT,
+    categoria_evento VARCHAR(100),
+    tematica VARCHAR(100),
+
+    poi_id INTEGER REFERENCES pois(id),
+    ubicacion_especifica TEXT,
+    direccion_evento TEXT,
+    latitud DECIMAL(10, 8),
+    longitud DECIMAL(11, 8),
+    barrio VARCHAR(100),
+
+    fecha_inicio DATE NOT NULL,
+    fecha_fin DATE,
+    hora_inicio TIME,
+    hora_fin TIME,
+    dias_semana VARCHAR(7),
+
+    url_evento VARCHAR(500),
+    url_inscripcion VARCHAR(500),
+    url_compra_tickets VARCHAR(500),
+    telefono_contacto VARCHAR(50),
+    email_contacto VARCHAR(255),
+
+    -- Control de duplicados
+    hash_evento VARCHAR(64),
+    activo BOOLEAN DEFAULT TRUE,
+
+    fecha_scraping TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    url_fuente VARCHAR(500),
+
+    CONSTRAINT check_fechas_evento CHECK (fecha_fin IS NULL OR fecha_fin >= fecha_inicio)
+);
+
+-- =================================================================
+-- TABLA: ITINERARIO_ACTIVIDADES (POIs y Eventos)
+-- =================================================================
+CREATE TABLE itinerario_actividades (
     id SERIAL PRIMARY KEY,
     itinerario_id INTEGER NOT NULL REFERENCES itinerarios(id) ON DELETE CASCADE,
-    poi_id INTEGER NOT NULL REFERENCES pois(id),
+
+    -- Puede ser POI o Evento
+    poi_id INTEGER REFERENCES pois(id),
+    evento_id INTEGER REFERENCES eventos(id),
+    tipo_actividad VARCHAR(10) NOT NULL CHECK (tipo_actividad IN ('poi', 'evento')),
 
     dia_visita INTEGER NOT NULL,
     orden_en_dia INTEGER NOT NULL,
@@ -235,17 +279,21 @@ CREATE TABLE itinerario_pois (
 
     hora_inicio_real TIME,
     hora_fin_real TIME,
-    fue_visitado BOOLEAN DEFAULT FALSE,
-    razon_no_visitado TEXT,
+    fue_realizada BOOLEAN DEFAULT FALSE,
+    razon_no_realizada TEXT,
 
     notas_planificacion TEXT,
-    notas_visita TEXT,
+    notas_realizacion TEXT,
 
     fecha_agregado TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 
-    UNIQUE (itinerario_id, poi_id),
-    CONSTRAINT check_orden CHECK (dia_visita > 0 AND orden_en_dia > 0),
-    CONSTRAINT check_tiempo CHECK (tiempo_estimado_minutos IS NULL OR tiempo_estimado_minutos > 0)
+    -- Constraints
+    CONSTRAINT check_actividad_valida CHECK (
+        (tipo_actividad = 'poi' AND poi_id IS NOT NULL AND evento_id IS NULL) OR
+        (tipo_actividad = 'evento' AND evento_id IS NOT NULL AND poi_id IS NULL)
+    ),
+    CONSTRAINT check_orden_actividad CHECK (dia_visita > 0 AND orden_en_dia > 0),
+    CONSTRAINT check_tiempo_actividad CHECK (tiempo_estimado_minutos IS NULL OR tiempo_estimado_minutos > 0)
 );
 
 -- =================================================================
@@ -281,42 +329,6 @@ CREATE TABLE valoraciones (
 );
 
 -- =================================================================
--- TABLA: EVENTOS
--- =================================================================
-CREATE TABLE eventos (
-    id SERIAL PRIMARY KEY,
-
-    nombre VARCHAR(255) NOT NULL,
-    descripcion TEXT,
-    categoria_evento VARCHAR(100),
-    tematica VARCHAR(100),
-
-    poi_id INTEGER REFERENCES pois(id),
-    ubicacion_especifica TEXT,
-    direccion_evento TEXT,
-    latitud DECIMAL(10, 8),
-    longitud DECIMAL(11, 8),
-    barrio VARCHAR(100),
-
-    fecha_inicio DATE NOT NULL,
-    fecha_fin DATE,
-    hora_inicio TIME,
-    hora_fin TIME,
-    dias_semana VARCHAR(7),
-
-    url_evento VARCHAR(500),
-    url_inscripcion VARCHAR(500),
-    url_compra_tickets VARCHAR(500),
-    telefono_contacto VARCHAR(50),
-    email_contacto VARCHAR(255),
-
-    fecha_scraping TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    url_fuente VARCHAR(500),
-
-    CONSTRAINT check_fechas_evento CHECK (fecha_fin IS NULL OR fecha_fin >= fecha_inicio)
-);
-
--- =================================================================
 -- ÍNDICES
 -- =================================================================
 
@@ -337,11 +349,16 @@ CREATE INDEX idx_usuarios_fecha_registro ON usuarios(fecha_registro);
 
 CREATE INDEX idx_itinerarios_usuario ON itinerarios(usuario_id, fecha_inicio DESC);
 CREATE INDEX idx_itinerarios_fechas ON itinerarios(fecha_inicio, fecha_fin) WHERE estado != 'cancelado';
-CREATE INDEX idx_itinerario_pois_orden ON itinerario_pois(itinerario_id, dia_visita, orden_en_dia);
+CREATE INDEX idx_itinerario_actividades_orden ON itinerario_actividades(itinerario_id, dia_visita, orden_en_dia);
+CREATE INDEX idx_itinerario_actividades_poi ON itinerario_actividades(poi_id) WHERE poi_id IS NOT NULL;
+CREATE INDEX idx_itinerario_actividades_evento ON itinerario_actividades(evento_id) WHERE evento_id IS NOT NULL;
+CREATE INDEX idx_itinerario_actividades_tipo ON itinerario_actividades(tipo_actividad);
 
 CREATE INDEX idx_eventos_fechas ON eventos(fecha_inicio, fecha_fin);
 CREATE INDEX idx_eventos_categoria ON eventos(categoria_evento, tematica);
 CREATE INDEX idx_eventos_poi ON eventos(poi_id) WHERE poi_id IS NOT NULL;
+CREATE INDEX idx_eventos_hash ON eventos(hash_evento) WHERE activo = TRUE;
+CREATE INDEX idx_eventos_activos ON eventos(activo, fecha_inicio) WHERE activo = TRUE;
 
 CREATE INDEX idx_valoraciones_poi ON valoraciones(poi_id, puntuacion_general DESC);
 CREATE INDEX idx_valoraciones_usuario ON valoraciones(usuario_id, fecha_creacion DESC);
@@ -351,33 +368,33 @@ CREATE INDEX idx_valoraciones_usuario ON valoraciones(usuario_id, fecha_creacion
 -- =================================================================
 
 CREATE OR REPLACE FUNCTION calcular_distancia_km(
-    lat1 DECIMAL, lon1 DECIMAL, 
+    lat1 DECIMAL, lon1 DECIMAL,
     lat2 DECIMAL, lon2 DECIMAL
 ) RETURNS DECIMAL AS $$
 BEGIN
     RETURN (
         6371 * acos(
-            cos(radians(lat1)) * cos(radians(lat2)) * 
-            cos(radians(lon2) - radians(lon1)) + 
+            cos(radians(lat1)) * cos(radians(lat2)) *
+            cos(radians(lon2) - radians(lon1)) +
             sin(radians(lat1)) * sin(radians(lat2))
         )
     );
 END;
 $$ LANGUAGE plpgsql IMMUTABLE;
 
-CREATE OR REPLACE FUNCTION actualizar_valoracion_poi(poi_id_param INTEGER) 
+CREATE OR REPLACE FUNCTION actualizar_valoracion_poi(poi_id_param INTEGER)
 RETURNS VOID AS $$
 BEGIN
-    UPDATE pois 
-    SET 
+    UPDATE pois
+    SET
         valoracion_promedio = (
-            SELECT AVG(puntuacion_general) 
-            FROM valoraciones 
+            SELECT AVG(puntuacion_general)
+            FROM valoraciones
             WHERE valoraciones.poi_id = poi_id_param
         ),
         numero_valoraciones = (
-            SELECT COUNT(*) 
-            FROM valoraciones 
+            SELECT COUNT(*)
+            FROM valoraciones
             WHERE valoraciones.poi_id = poi_id_param
         ),
         fecha_actualizacion = CURRENT_TIMESTAMP
@@ -385,17 +402,19 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
-CREATE OR REPLACE FUNCTION limpiar_eventos_vencidos() 
+CREATE OR REPLACE FUNCTION desactivar_eventos_vencidos()
 RETURNS INTEGER AS $$
 DECLARE
-    eventos_eliminados INTEGER;
+    eventos_desactivados INTEGER;
 BEGIN
-    DELETE FROM eventos 
-    WHERE fecha_fin < CURRENT_DATE 
-      AND fecha_fin IS NOT NULL;
-    
-    GET DIAGNOSTICS eventos_eliminados = ROW_COUNT;
-    RETURN eventos_eliminados;
+    UPDATE eventos
+    SET activo = FALSE
+    WHERE fecha_fin < CURRENT_DATE
+      AND fecha_fin IS NOT NULL
+      AND activo = TRUE;
+
+    GET DIAGNOSTICS eventos_desactivados = ROW_COUNT;
+    RETURN eventos_desactivados;
 END;
 $$ LANGUAGE plpgsql;
 
@@ -454,7 +473,7 @@ COMMENT ON TABLE pois IS 'Tabla principal normalizada de todos los puntos de int
 COMMENT ON TABLE usuarios IS 'Información completa de usuarios registrados en el sistema';
 COMMENT ON TABLE preferencias_usuario IS 'Preferencias específicas de cada usuario por categoría';
 COMMENT ON TABLE itinerarios IS 'Itinerarios de viaje creados por los usuarios';
-COMMENT ON TABLE itinerario_pois IS 'Relación detallada entre itinerarios y POIs visitados';
+COMMENT ON TABLE itinerario_actividades IS 'Relación detallada entre itinerarios, POIs y eventos visitados';
 COMMENT ON TABLE valoraciones IS 'Valoraciones y reviews de usuarios sobre POIs visitados';
 COMMENT ON TABLE eventos IS 'Eventos temporales scrapeados del sitio oficial de turismo';
 

@@ -17,6 +17,7 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 import logging
 import sys
+import hashlib
 from typing import Dict, List, Optional
 from csv_processor import DatabaseConfig
 
@@ -37,6 +38,20 @@ class ETLProcessor:
     def __init__(self):
         self.operational_conn = None
         self.processor_conn = None
+    
+    def generar_hash_evento(self, nombre: str, fecha_inicio: str, ubicacion: str) -> str:
+        """
+        Genera un hash único para un evento basado en nombre, fecha e ubicación
+        """
+        # Normalizar datos para el hash
+        datos_hash = (
+            (nombre or '').strip().lower() +
+            (fecha_inicio or '') +
+            (ubicacion or '').strip().lower()
+        )
+        
+        # Generar hash SHA-256
+        return hashlib.sha256(datos_hash.encode('utf-8')).hexdigest()
         
     def connect_databases(self):
         """Conectar a ambas bases de datos"""
@@ -401,7 +416,8 @@ class ETLProcessor:
             url_evento,
             fecha_scraping
         FROM eventos
-        WHERE fecha_inicio >= CURRENT_DATE
+        WHERE activo = TRUE
+          AND (fecha_fin IS NULL OR fecha_fin >= CURRENT_DATE)
         ORDER BY fecha_inicio
         """
         
@@ -449,13 +465,10 @@ class ETLProcessor:
                 mes_inicio = fecha_inicio.month
                 dia_semana_inicio = fecha_inicio.weekday() + 1  # 1=Monday, 7=Sunday
                 
-                # APLICAR CATEGORÍAS UNIFICADAS
-                categoria_unificada = self._unify_event_category(evento['categoria_evento'])
-                
                 transformed_evento = {
                     'evento_id': evento['id'],
                     'nombre': evento['nombre'],
-                    'categoria_evento': categoria_unificada,  # Usar categoría unificada
+                    'categoria_evento': evento['categoria_evento'],
                     'tematica': evento['tematica'],
                     'poi_id': evento['poi_id'],
                     'latitud': evento['latitud'],
@@ -517,20 +530,22 @@ class ETLProcessor:
             logger.error("La tabla eventos no existe en la base de datos operacional")
             return 0
         
-        # Query ajustada al nuevo esquema (sin campos eliminados)
+        # Query ajustada al nuevo esquema con control de hash
         insert_query = """
         INSERT INTO eventos (
             nombre, descripcion, categoria_evento, tematica,
             direccion_evento, ubicacion_especifica, latitud, longitud, barrio,
             fecha_inicio, dias_semana, hora_inicio, hora_fin,
-            url_evento, fecha_scraping, url_fuente
+            url_evento, fecha_scraping, url_fuente, hash_evento, activo
         ) VALUES (
             %(nombre)s, %(descripcion)s, %(categoria_evento)s, %(tematica)s,
             %(direccion_evento)s, %(ubicacion_especifica)s, %(latitud)s, %(longitud)s, %(barrio)s,
             CURRENT_DATE, %(dias_semana)s, %(hora_inicio)s, %(hora_fin)s,
-            %(url_evento)s, %(fecha_scraping)s, %(url_fuente)s
+            %(url_evento)s, %(fecha_scraping)s, %(url_fuente)s, %(hash_evento)s, TRUE
         )
-        ON CONFLICT DO NOTHING
+        ON CONFLICT (hash_evento) WHERE activo = TRUE DO UPDATE SET
+            fecha_scraping = EXCLUDED.fecha_scraping,
+            activo = TRUE
         """
         
         count = 0
@@ -585,6 +600,14 @@ class ETLProcessor:
                     except (ValueError, TypeError):
                         longitud = None
                 
+                # Generar hash único para el evento
+                ubicacion_completa = f"{evento.get('direccion_evento', '')} {evento.get('ubicacion_especifica', '')} {evento.get('barrio', '')}"
+                hash_evento = self.generar_hash_evento(
+                    evento.get('nombre', ''),
+                    str(fecha_scraping.date()) if fecha_scraping else '',
+                    ubicacion_completa
+                )
+                
                 # Extraer solo los campos que van a la BD (sin campos extra)
                 evento_bd = {
                     "nombre": str(evento.get('nombre', ''))[:255],  # Limitar longitud
@@ -601,7 +624,8 @@ class ETLProcessor:
                     "hora_fin": hora_fin,
                     "url_evento": str(evento.get('url_evento', ''))[:500],
                     "fecha_scraping": fecha_scraping,
-                    "url_fuente": str(evento.get('url_fuente', '') or 'https://turismo.buenosaires.gob.ar/es/que-hacer-en-la-ciudad')[:500]
+                    "url_fuente": str(evento.get('url_fuente', '') or 'https://turismo.buenosaires.gob.ar/es/que-hacer-en-la-ciudad')[:500],
+                    "hash_evento": hash_evento
                 }
                 
                 # Debug: mostrar el primer evento
@@ -670,51 +694,6 @@ class ETLProcessor:
             self.disconnect_databases()
             
         return results
-
-    def _unify_event_category(self, categoria_original: str) -> str:
-        """Unificar categorías de eventos con las de POIs"""
-        # Mapeo de categorías originales a categorías unificadas
-        unification_map = {
-            'Visita guiada': 'Lugares Históricos',
-            'Experiencias': 'Entretenimiento',
-            'Paseo': 'Entretenimiento',
-            'Actividad cultural': 'Lugares Históricos',
-            'Tour': 'Lugares Históricos',
-            'Evento gastronómico': 'Gastronomía',
-            'Actividad gastronómica': 'Gastronomía',
-            'Museo': 'Museos',
-            'Exposición': 'Museos',
-            'Show': 'Entretenimiento',
-            'Espectáculo': 'Entretenimiento',
-            'Concierto': 'Entretenimiento',
-            'Teatro': 'Entretenimiento'
-        }
-        
-        # Normalizar la categoría original
-        categoria_normalizada = categoria_original.strip().title()
-        
-        # Buscar mapeo exacto
-        if categoria_normalizada in unification_map:
-            return unification_map[categoria_normalizada]
-        
-        # Buscar mapeo parcial (contiene palabras clave)
-        categoria_lower = categoria_original.lower()
-        for key, unified_category in unification_map.items():
-            if key.lower() in categoria_lower:
-                return unified_category
-        
-        # Si no encuentra mapeo, usar lógica de palabras clave
-        if any(word in categoria_lower for word in ['gastronom', 'comida', 'restaurant', 'food']):
-            return 'Gastronomía'
-        elif any(word in categoria_lower for word in ['museo', 'exposic', 'muestra']):
-            return 'Museos'
-        elif any(word in categoria_lower for word in ['historic', 'patrimonio', 'monument']):
-            return 'Lugares Históricos'
-        elif any(word in categoria_lower for word in ['entretenimiento', 'show', 'espectaculo', 'concierto', 'diversión']):
-            return 'Entretenimiento'
-        else:
-            # Categoría por defecto si no se puede mapear
-            return 'Entretenimiento'
 
 def main():
     """Función principal"""
