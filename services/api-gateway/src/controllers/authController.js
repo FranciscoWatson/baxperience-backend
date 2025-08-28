@@ -5,18 +5,18 @@ const db = require('../config/database');
 class AuthController {
   async register(req, res) {
     try {
-      const { email, password, firstName, lastName, username } = req.body;
+      const { email, password, nombre, apellido, username } = req.body;
 
       // Validate input
-      if (!email || !password || !firstName || !lastName || !username) {
+      if (!email || !password || !nombre || !apellido || !username) {
         return res.status(400).json({
-          error: 'All fields are required: email, password, firstName, lastName, username'
+          error: 'All fields are required: email, password, nombre, apellido, username'
         });
       }
 
       // Check if user already exists
       const existingUser = await db.query(
-        'SELECT id FROM users WHERE email = $1',
+        'SELECT id FROM usuarios WHERE email = $1',
         [email]
       );
 
@@ -27,7 +27,7 @@ class AuthController {
       }
 
       const usernameExists = await db.query(
-        'SELECT id FROM users WHERE username = $1',
+        'SELECT id FROM usuarios WHERE username = $1',
         [username]
       );
 
@@ -43,10 +43,10 @@ class AuthController {
 
       // Create user
       const result = await db.query(
-        `INSERT INTO users (email, password, first_name, last_name, username, created_at, updated_at) 
-         VALUES ($1, $2, $3, $4, $5, NOW(), NOW()) 
-         RETURNING id, email, first_name, last_name, username, created_at`,
-        [email, hashedPassword, firstName, lastName, username]
+        `INSERT INTO usuarios (email, password_hash, nombre, apellido, username, fecha_registro, fecha_actualizacion) 
+         VALUES ($1, $2, $3, $4, $5, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP) 
+         RETURNING id, email, nombre, apellido, username, fecha_registro`,
+        [email, hashedPassword, nombre, apellido, username]
       );
 
       const user = result.rows[0];
@@ -66,10 +66,10 @@ class AuthController {
         user: {
           id: user.id,
           email: user.email,
-          firstName: user.first_name,
-          lastName: user.last_name,
+          nombre: user.nombre,
+          apellido: user.apellido,
           username: user.username,
-          createdAt: user.created_at
+          fechaRegistro: user.fecha_registro
         },
         token
       });
@@ -95,7 +95,7 @@ class AuthController {
 
       // Find user
       const result = await db.query(
-        'SELECT id, email, password, first_name, last_name, created_at FROM users WHERE email = $1',
+        'SELECT id, email, password_hash, nombre, apellido, fecha_registro FROM usuarios WHERE email = $1',
         [email]
       );
 
@@ -108,7 +108,7 @@ class AuthController {
       const user = result.rows[0];
 
       // Verify password
-      const isValidPassword = await bcrypt.compare(password, user.password);
+      const isValidPassword = await bcrypt.compare(password, user.password_hash);
 
       if (!isValidPassword) {
         return res.status(401).json({
@@ -131,9 +131,9 @@ class AuthController {
         user: {
           id: user.id,
           email: user.email,
-          firstName: user.first_name,
-          lastName: user.last_name,
-          createdAt: user.created_at
+          nombre: user.nombre,
+          apellido: user.apellido,
+          fechaRegistro: user.fecha_registro
         },
         token
       });
@@ -151,7 +151,7 @@ class AuthController {
       const userId = req.user.userId;
 
       const result = await db.query(
-        'SELECT id, email, first_name, last_name, created_at, updated_at FROM users WHERE id = $1',
+        'SELECT id, email, nombre, apellido, fecha_registro, fecha_actualizacion FROM usuarios WHERE id = $1',
         [userId]
       );
 
@@ -167,10 +167,10 @@ class AuthController {
         user: {
           id: user.id,
           email: user.email,
-          firstName: user.first_name,
-          lastName: user.last_name,
-          createdAt: user.created_at,
-          updatedAt: user.updated_at
+          nombre: user.nombre,
+          apellido: user.apellido,
+          fechaRegistro: user.fecha_registro,
+          fechaActualizacion: user.fecha_actualizacion
         }
       });
 
@@ -185,12 +185,12 @@ class AuthController {
   async setupProfile(req, res) {
     try {
         const userId = req.user.userId;
-        const { fecha_nacimiento, pais_origen, ciudad_origen, idioma_preferido, telefono, tipo_viajero } = req.body;
+        const { fechaNacimiento, paisOrigen, ciudadOrigen, idiomaPreferido, telefono, tipoViajero, genero } = req.body;
 
         // Validate required fields for basic functionality
-        if ( !ciudad_origen || !telefono || !tipo_viajero || !fecha_nacimiento || !pais_origen || !idioma_preferido ) {
+        if (!ciudadOrigen || !telefono || !tipoViajero || !fechaNacimiento || !paisOrigen || !idiomaPreferido || !genero) {
         return res.status(400).json({
-            error: 'Required fields: ciudad_origen, telefono, tipo_viajero, fecha_nacimiento, pais_origen, idioma_preferido'
+            error: 'Required fields: ciudadOrigen, telefono, tipoViajero, fechaNacimiento, paisOrigen, idiomaPreferido, genero'
         });
         }
 
@@ -203,10 +203,11 @@ class AuthController {
             idioma_preferido = COALESCE($4, idioma_preferido),
             telefono = $5,
             tipo_viajero = $6,
+            genero = $7,
             fecha_actualizacion = CURRENT_TIMESTAMP
-        WHERE id = $7
-        RETURNING id, username, email, nombre, apellido, ciudad_origen, idioma_preferido`,
-        [fecha_nacimiento, pais_origen, ciudad_origen, idioma_preferido, telefono, tipo_viajero, userId]
+        WHERE id = $8
+        RETURNING id, username, email, nombre, apellido, ciudad_origen, idioma_preferido, telefono, tipo_viajero, fecha_nacimiento, pais_origen, genero`,
+        [fechaNacimiento, paisOrigen, ciudadOrigen, idiomaPreferido, telefono, tipoViajero, genero, userId]
         );
 
         if (result.rows.length === 0) {
@@ -230,7 +231,8 @@ class AuthController {
             idiomaPreferido: user.idioma_preferido,
             telefono: user.telefono,
             tipoViajero: user.tipo_viajero,
-            fechaNacimiento: user.fecha_nacimiento
+            fechaNacimiento: user.fecha_nacimiento,
+            genero: user.genero
             }
         });
 

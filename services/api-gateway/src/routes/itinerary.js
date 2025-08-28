@@ -13,4 +13,8 @@ router.get('/:id', itineraryController.getItineraryById);
 router.put('/:id', itineraryController.updateItinerary);
 router.delete('/:id', itineraryController.deleteItinerary);
 
+// Itinerary activities
+router.post('/:itinerarioId/actividades', itineraryController.addActivityToItinerary);
+router.get('/:itinerarioId/actividades', itineraryController.getItineraryActivities);
+
 module.exports = router;
