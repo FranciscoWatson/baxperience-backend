@@ -1,4 +1,5 @@
 const db = require('../config/database');
+const kafkaService = require('../services/kafkaService');
 
 class ItineraryController {
   async createItinerary(req, res) {
@@ -392,6 +393,121 @@ class ItineraryController {
       console.error('Get itinerary activities error:', error);
       res.status(500).json({
         error: 'Internal server error while fetching itinerary activities'
+      });
+    }
+  }
+
+  async generatePersonalizedItinerary(req, res) {
+    try {
+      const userId = req.user.userId;
+      const { 
+        fecha_visita, 
+        hora_inicio, 
+        duracion_horas, 
+        categorias_preferidas, 
+        zona_preferida, 
+        presupuesto 
+      } = req.body;
+
+      // Validaciones básicas
+      if (!fecha_visita || !hora_inicio || !duracion_horas) {
+        return res.status(400).json({
+          error: 'Required fields: fecha_visita, hora_inicio, duracion_horas'
+        });
+      }
+
+      // Validar formato de fecha
+      const fechaRegex = /^\d{4}-\d{2}-\d{2}$/;
+      if (!fechaRegex.test(fecha_visita)) {
+        return res.status(400).json({
+          error: 'fecha_visita must be in format YYYY-MM-DD'
+        });
+      }
+
+      // Validar formato de hora
+      const horaRegex = /^\d{2}:\d{2}$/;
+      if (!horaRegex.test(hora_inicio)) {
+        return res.status(400).json({
+          error: 'hora_inicio must be in format HH:MM'
+        });
+      }
+
+      // Validar duración
+      if (duracion_horas < 1 || duracion_horas > 12) {
+        return res.status(400).json({
+          error: 'duracion_horas must be between 1 and 12'
+        });
+      }
+
+      // Construir los datos de la solicitud
+      const requestData = {
+        fecha_visita,
+        hora_inicio,
+        duracion_horas,
+        categorias_preferidas: categorias_preferidas || null,
+        zona_preferida: zona_preferida || null,
+        presupuesto: presupuesto || null
+      };
+
+      try {
+        // Enviar solicitud a través de Kafka y esperar respuesta
+        const { requestId, response } = await kafkaService.sendItineraryRequestAndWait(userId, requestData, 45000);
+
+        // Procesar respuesta
+        if (response.status === 'success') {
+          const data = response.data || {};
+          
+          res.status(200).json({
+            message: 'Itinerary generated successfully',
+            request_id: requestId,
+            itinerario: {
+              id: data.itinerario_id,
+              actividades: data.actividades || [],
+              preferencias_usadas: data.preferencias_usadas || {},
+              metadata: {
+                processing_time_seconds: data.processing_metadata?.processing_time_seconds,
+                timestamp: response.timestamp
+              }
+            }
+          });
+
+        } else if (response.status === 'error') {
+          const error = response.error || {};
+          
+          res.status(400).json({
+            error: 'Error generating itinerary',
+            message: error.message || 'Unknown error occurred',
+            suggestions: error.suggestions || [],
+            request_id: requestId
+          });
+
+        } else {
+          res.status(500).json({
+            error: 'Unexpected response format from itinerary service',
+            request_id: requestId
+          });
+        }
+
+      } catch (kafkaError) {
+        console.error('Kafka error in generatePersonalizedItinerary:', kafkaError);
+        
+        if (kafkaError.message.includes('Timeout')) {
+          res.status(504).json({
+            error: 'Timeout generating itinerary',
+            message: 'The itinerary service is taking too long to respond. Please try again later.'
+          });
+        } else {
+          res.status(503).json({
+            error: 'Service unavailable',
+            message: 'The itinerary service is currently unavailable. Please try again later.'
+          });
+        }
+      }
+
+    } catch (error) {
+      console.error('Generate personalized itinerary error:', error);
+      res.status(500).json({
+        error: 'Internal server error while generating personalized itinerary'
       });
     }
   }

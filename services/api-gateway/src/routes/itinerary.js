@@ -6,6 +6,9 @@ const authMiddleware = require('../middleware/auth');
 // All itinerary routes require authentication
 router.use(authMiddleware);
 
+// Generate personalized itinerary
+router.post('/generate', itineraryController.generatePersonalizedItinerary);
+
 // Itinerary CRUD operations
 router.post('/', itineraryController.createItinerary);
 router.get('/', itineraryController.getUserItineraries);
