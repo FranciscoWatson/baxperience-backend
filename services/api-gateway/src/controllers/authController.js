@@ -1,39 +1,44 @@
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
-const db = require('../config/database');
+const authRepository = require('../repositories/authRepository');
 
 class AuthController {
   async register(req, res) {
     try {
-      const { email, password, nombre, apellido, username } = req.body;
+      const { 
+        email, 
+        password, 
+        nombre, 
+        apellido, 
+        username, 
+        fechaNacimiento, 
+        paisOrigen, 
+        ciudadOrigen, 
+        idiomaPreferido, 
+        telefono, 
+        tipoViajero, 
+        genero,
+        preferencias
+      } = req.body;
 
-      // Validate input
+      // Validate basic input
       if (!email || !password || !nombre || !apellido || !username) {
         return res.status(400).json({
           error: 'All fields are required: email, password, nombre, apellido, username'
         });
       }
 
-      // Check if user already exists
-      const existingUser = await db.query(
-        'SELECT id FROM usuarios WHERE email = $1',
-        [email]
-      );
-
-      if (existingUser.rows.length > 0) {
-        return res.status(409).json({
-          error: 'User already exists with this email'
+      // Validate profile fields
+      if (!ciudadOrigen || !telefono || !tipoViajero || !fechaNacimiento || !paisOrigen || !idiomaPreferido || !genero) {
+        return res.status(400).json({
+          error: 'Required profile fields: ciudadOrigen, telefono, tipoViajero, fechaNacimiento, paisOrigen, idiomaPreferido, genero'
         });
       }
 
-      const usernameExists = await db.query(
-        'SELECT id FROM usuarios WHERE username = $1',
-        [username]
-      );
-
-      if (usernameExists.rows.length > 0) {
-        return res.status(409).json({
-          error: 'Username already exists'
+      // Validate preferences
+      if (!preferencias || !Array.isArray(preferencias) || preferencias.length === 0) {
+        return res.status(400).json({
+          error: 'At least one preference category is required'
         });
       }
 
@@ -41,21 +46,29 @@ class AuthController {
       const saltRounds = 12;
       const hashedPassword = await bcrypt.hash(password, saltRounds);
 
-      // Create user
-      const result = await db.query(
-        `INSERT INTO usuarios (email, password_hash, nombre, apellido, username, fecha_registro, fecha_actualizacion) 
-         VALUES ($1, $2, $3, $4, $5, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP) 
-         RETURNING id, email, nombre, apellido, username, fecha_registro`,
-        [email, hashedPassword, nombre, apellido, username]
-      );
+      // Create user with all profile data and preferences
+      const userData = {
+        email,
+        hashedPassword,
+        nombre,
+        apellido,
+        username,
+        fechaNacimiento,
+        paisOrigen,
+        ciudadOrigen,
+        idiomaPreferido,
+        telefono,
+        tipoViajero,
+        genero
+      };
 
-      const user = result.rows[0];
+      const result = await authRepository.registerUserWithPreferences(userData, preferencias);
 
       // Generate JWT token
       const token = jwt.sign(
         { 
-          userId: user.id, 
-          email: user.email 
+          userId: result.user.id, 
+          email: result.user.email 
         },
         process.env.JWT_SECRET,
         { expiresIn: process.env.JWT_EXPIRES_IN }
@@ -64,18 +77,39 @@ class AuthController {
       res.status(201).json({
         message: 'User registered successfully',
         user: {
-          id: user.id,
-          email: user.email,
-          nombre: user.nombre,
-          apellido: user.apellido,
-          username: user.username,
-          fechaRegistro: user.fecha_registro
+          id: result.user.id,
+          email: result.user.email,
+          nombre: result.user.nombre,
+          apellido: result.user.apellido,
+          username: result.user.username,
+          fechaNacimiento: result.user.fecha_nacimiento,
+          paisOrigen: result.user.pais_origen,
+          ciudadOrigen: result.user.ciudad_origen,
+          idiomaPreferido: result.user.idioma_preferido,
+          telefono: result.user.telefono,
+          tipoViajero: result.user.tipo_viajero,
+          genero: result.user.genero,
+          fechaRegistro: result.user.fecha_registro,
+          preferencias: result.preferencias
         },
         token
       });
 
     } catch (error) {
       console.error('Registration error:', error);
+      
+      if (error.message === 'USER_EMAIL_EXISTS') {
+        return res.status(409).json({
+          error: 'User already exists with this email'
+        });
+      }
+      
+      if (error.message === 'USER_USERNAME_EXISTS') {
+        return res.status(409).json({
+          error: 'Username already exists'
+        });
+      }
+      
       res.status(500).json({
         error: 'Internal server error during registration'
       });
@@ -94,18 +128,13 @@ class AuthController {
       }
 
       // Find user
-      const result = await db.query(
-        'SELECT id, email, password_hash, nombre, apellido, fecha_registro FROM usuarios WHERE email = $1',
-        [email]
-      );
+      const user = await authRepository.findUserForLogin(email);
 
-      if (result.rows.length === 0) {
+      if (!user) {
         return res.status(401).json({
           error: 'Invalid credentials'
         });
       }
-
-      const user = result.rows[0];
 
       // Verify password
       const isValidPassword = await bcrypt.compare(password, user.password_hash);
@@ -150,18 +179,13 @@ class AuthController {
     try {
       const userId = req.user.userId;
 
-      const result = await db.query(
-        'SELECT id, email, nombre, apellido, fecha_registro, fecha_actualizacion FROM usuarios WHERE id = $1',
-        [userId]
-      );
+      const user = await authRepository.findUserById(userId);
 
-      if (result.rows.length === 0) {
+      if (!user) {
         return res.status(404).json({
           error: 'User not found'
         });
       }
-
-      const user = result.rows[0];
 
       res.status(200).json({
         user: {
@@ -195,28 +219,23 @@ class AuthController {
         }
 
         // Update user profile
-        const result = await db.query(
-        `UPDATE usuarios SET
-            fecha_nacimiento = $1, 
-            pais_origen = $2, 
-            ciudad_origen = $3,
-            idioma_preferido = COALESCE($4, idioma_preferido),
-            telefono = $5,
-            tipo_viajero = $6,
-            genero = $7,
-            fecha_actualizacion = CURRENT_TIMESTAMP
-        WHERE id = $8
-        RETURNING id, username, email, nombre, apellido, ciudad_origen, idioma_preferido, telefono, tipo_viajero, fecha_nacimiento, pais_origen, genero`,
-        [fechaNacimiento, paisOrigen, ciudadOrigen, idiomaPreferido, telefono, tipoViajero, genero, userId]
-        );
+        const profileData = {
+          fechaNacimiento,
+          paisOrigen,
+          ciudadOrigen,
+          idiomaPreferido,
+          telefono,
+          tipoViajero,
+          genero
+        };
 
-        if (result.rows.length === 0) {
-        return res.status(404).json({
+        const user = await authRepository.updateUserProfile(userId, profileData);
+
+        if (!user) {
+          return res.status(404).json({
             error: 'User not found'
-        });
+          });
         }
-
-        const user = result.rows[0];
 
         res.status(200).json({
         message: 'Profile setup completed successfully',

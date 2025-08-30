@@ -1,4 +1,4 @@
-const db = require('../config/database');
+const itineraryRepository = require('../repositories/itineraryRepository');
 const kafkaService = require('../services/kafkaService');
 
 class ItineraryController {
@@ -15,14 +15,15 @@ class ItineraryController {
       }
 
       // Create itinerary
-      const result = await db.query(
-        `INSERT INTO itinerarios (usuario_id, nombre, descripcion, fecha_inicio, fecha_fin, modo_transporte_preferido, estado, fecha_creacion, fecha_actualizacion) 
-         VALUES ($1, $2, $3, $4, $5, $6, 'planificado', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP) 
-         RETURNING id, nombre, descripcion, fecha_inicio, fecha_fin, modo_transporte_preferido, estado, fecha_creacion`,
-        [userId, nombre, descripcion || null, fechaInicio, fechaFin, modoTransportePreferido || null]
-      );
+      const itineraryData = {
+        nombre,
+        descripcion,
+        fechaInicio,
+        fechaFin,
+        modoTransportePreferido
+      };
 
-      const itinerary = result.rows[0];
+      const itinerary = await itineraryRepository.createItinerary(userId, itineraryData);
 
       res.status(201).json({
         message: 'Itinerary created successfully',
@@ -53,24 +54,12 @@ class ItineraryController {
 
       const offset = (pagina - 1) * limite;
 
-      const result = await db.query(
-        `SELECT id, nombre, descripcion, fecha_inicio, fecha_fin, modo_transporte_preferido, estado, fecha_creacion, fecha_actualizacion 
-         FROM itinerarios 
-         WHERE usuario_id = $1 
-         ORDER BY fecha_creacion DESC 
-         LIMIT $2 OFFSET $3`,
-        [userId, limite, offset]
-      );
+      const itinerarios = await itineraryRepository.getUserItineraries(userId, limite, offset);
+      const total = await itineraryRepository.getUserItinerariesCount(userId);
 
-      const countResult = await db.query(
-        'SELECT COUNT(*) FROM itinerarios WHERE usuario_id = $1',
-        [userId]
-      );
-
-      const total = parseInt(countResult.rows[0].count);
       const totalPaginas = Math.ceil(total / limite);
 
-      const itinerarios = result.rows.map(itinerary => ({
+      const formattedItinerarios = itinerarios.map(itinerary => ({
         id: itinerary.id,
         nombre: itinerary.nombre,
         descripcion: itinerary.descripcion,
@@ -83,7 +72,7 @@ class ItineraryController {
       }));
 
       res.status(200).json({
-        itinerarios,
+        itinerarios: formattedItinerarios,
         paginacion: {
           pagina: parseInt(pagina),
           limite: parseInt(limite),
@@ -105,20 +94,13 @@ class ItineraryController {
       const userId = req.user.userId;
       const { id } = req.params;
 
-      const result = await db.query(
-        `SELECT id, nombre, descripcion, fecha_inicio, fecha_fin, modo_transporte_preferido, estado, fecha_creacion, fecha_actualizacion 
-         FROM itinerarios 
-         WHERE id = $1 AND usuario_id = $2`,
-        [id, userId]
-      );
+      const itinerary = await itineraryRepository.getItineraryById(id, userId);
 
-      if (result.rows.length === 0) {
+      if (!itinerary) {
         return res.status(404).json({
           error: 'Itinerary not found'
         });
       }
-
-      const itinerary = result.rows[0];
 
       res.status(200).json({
         itinerario: {
@@ -149,40 +131,24 @@ class ItineraryController {
       const { nombre, descripcion, fechaInicio, fechaFin, modoTransportePreferido } = req.body;
 
       // Check if itinerary exists and belongs to user
-      const existingResult = await db.query(
-        'SELECT id FROM itinerarios WHERE id = $1 AND usuario_id = $2',
-        [id, userId]
-      );
+      const existingItinerary = await itineraryRepository.checkItineraryOwnership(id, userId);
 
-      if (existingResult.rows.length === 0) {
+      if (!existingItinerary) {
         return res.status(404).json({
           error: 'Itinerary not found'
         });
       }
 
       // Update itinerary
-      const result = await db.query(
-        `UPDATE itinerarios 
-         SET nombre = COALESCE($1, nombre), 
-             descripcion = COALESCE($2, descripcion), 
-             fecha_inicio = COALESCE($3, fecha_inicio),
-             fecha_fin = COALESCE($4, fecha_fin),
-             modo_transporte_preferido = COALESCE($5, modo_transporte_preferido),
-             fecha_actualizacion = CURRENT_TIMESTAMP
-         WHERE id = $6 AND usuario_id = $7 
-         RETURNING id, nombre, descripcion, fecha_inicio, fecha_fin, modo_transporte_preferido, estado, fecha_creacion, fecha_actualizacion`,
-        [
-          nombre || null,
-          descripcion || null,
-          fechaInicio || null,
-          fechaFin || null,
-          modoTransportePreferido || null,
-          id,
-          userId
-        ]
-      );
+      const updateData = {
+        nombre,
+        descripcion,
+        fechaInicio,
+        fechaFin,
+        modoTransportePreferido
+      };
 
-      const itinerary = result.rows[0];
+      const itinerary = await itineraryRepository.updateItinerary(id, userId, updateData);
 
       res.status(200).json({
         message: 'Itinerary updated successfully',
@@ -212,12 +178,9 @@ class ItineraryController {
       const userId = req.user.userId;
       const { id } = req.params;
 
-      const result = await db.query(
-        'DELETE FROM itinerarios WHERE id = $1 AND usuario_id = $2 RETURNING id',
-        [id, userId]
-      );
+      const deletedItinerary = await itineraryRepository.deleteItinerary(id, userId);
 
-      if (result.rows.length === 0) {
+      if (!deletedItinerary) {
         return res.status(404).json({
           error: 'Itinerary not found'
         });
@@ -271,39 +234,28 @@ class ItineraryController {
       }
 
       // Verify itinerary belongs to user
-      const itineraryCheck = await db.query(
-        'SELECT id FROM itinerarios WHERE id = $1 AND usuario_id = $2',
-        [itinerarioId, userId]
-      );
+      const itineraryCheck = await itineraryRepository.checkItineraryOwnership(itinerarioId, userId);
 
-      if (itineraryCheck.rows.length === 0) {
+      if (!itineraryCheck) {
         return res.status(404).json({
           error: 'Itinerary not found'
         });
       }
 
       // Add activity
-      const result = await db.query(
-        `INSERT INTO itinerario_actividades 
-         (itinerario_id, poi_id, evento_id, tipo_actividad, dia_visita, orden_en_dia, 
-          hora_inicio_planificada, hora_fin_planificada, tiempo_estimado_minutos, notas_planificacion)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-         RETURNING id, tipo_actividad, dia_visita, orden_en_dia, fecha_agregado`,
-        [
-          itinerarioId,
-          tipoActividad === 'poi' ? poiId : null,
-          tipoActividad === 'evento' ? eventoId : null,
-          tipoActividad,
-          diaVisita,
-          ordenEnDia,
-          horaInicioPlanificada || null,
-          horaFinPlanificada || null,
-          tiempoEstimadoMinutos || null,
-          notasPlanificacion || null
-        ]
-      );
+      const activityData = {
+        tipoActividad,
+        poiId,
+        eventoId,
+        diaVisita,
+        ordenEnDia,
+        horaInicioPlanificada,
+        horaFinPlanificada,
+        tiempoEstimadoMinutos,
+        notasPlanificacion
+      };
 
-      const activity = result.rows[0];
+      const activity = await itineraryRepository.addActivityToItinerary(itinerarioId, activityData);
 
       res.status(201).json({
         message: 'Activity added to itinerary successfully',
@@ -330,34 +282,17 @@ class ItineraryController {
       const { itinerarioId } = req.params;
 
       // Verify itinerary belongs to user
-      const itineraryCheck = await db.query(
-        'SELECT id FROM itinerarios WHERE id = $1 AND usuario_id = $2',
-        [itinerarioId, userId]
-      );
+      const itineraryCheck = await itineraryRepository.checkItineraryOwnership(itinerarioId, userId);
 
-      if (itineraryCheck.rows.length === 0) {
+      if (!itineraryCheck) {
         return res.status(404).json({
           error: 'Itinerary not found'
         });
       }
 
-      const result = await db.query(
-        `SELECT 
-          ia.id, ia.tipo_actividad, ia.dia_visita, ia.orden_en_dia,
-          ia.hora_inicio_planificada, ia.hora_fin_planificada, ia.tiempo_estimado_minutos,
-          ia.hora_inicio_real, ia.hora_fin_real, ia.fue_realizada,
-          ia.notas_planificacion, ia.notas_realizacion,
-          p.id as poi_id, p.nombre as poi_nombre, p.latitud as poi_latitud, p.longitud as poi_longitud, p.direccion as poi_direccion,
-          e.id as evento_id, e.nombre as evento_nombre, e.fecha_inicio as evento_fecha_inicio, e.fecha_fin as evento_fecha_fin
-         FROM itinerario_actividades ia
-         LEFT JOIN pois p ON ia.poi_id = p.id
-         LEFT JOIN eventos e ON ia.evento_id = e.id
-         WHERE ia.itinerario_id = $1
-         ORDER BY ia.dia_visita, ia.orden_en_dia`,
-        [itinerarioId]
-      );
+      const activities = await itineraryRepository.getItineraryActivities(itinerarioId);
 
-      const activities = result.rows.map(activity => ({
+      const formattedActivities = activities.map(activity => ({
         id: activity.id,
         tipoActividad: activity.tipo_actividad,
         diaVisita: activity.dia_visita,
@@ -386,7 +321,7 @@ class ItineraryController {
       }));
 
       res.status(200).json({
-        actividades: activities
+        actividades: formattedActivities
       });
 
     } catch (error) {
