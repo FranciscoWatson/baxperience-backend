@@ -298,9 +298,12 @@ class ETLProcessor:
             longitud DECIMAL(11, 8),
             barrio VARCHAR(100),
             
-            -- Fechas (para clustering temporal)
+            -- Fechas y horarios (para clustering temporal)
             fecha_inicio DATE NOT NULL,
             fecha_fin DATE,
+            hora_inicio TIME, -- horario específico (si existe)
+            hora_fin TIME, -- horario de fin (si existe)
+            dias_semana VARCHAR(100), -- días de la semana
             duracion_dias INTEGER,
             mes_inicio INTEGER, -- 1-12 para clustering estacional
             dia_semana_inicio INTEGER, -- 1-7 para clustering por día
@@ -502,7 +505,7 @@ class ETLProcessor:
         SELECT 
             id, nombre, categoria_evento, tematica,
             poi_id, latitud, longitud, barrio,
-            fecha_inicio, fecha_fin,
+            fecha_inicio, fecha_fin, hora_inicio, hora_fin, dias_semana,
             url_evento,
             fecha_scraping
         FROM eventos
@@ -527,14 +530,14 @@ class ETLProcessor:
         INSERT INTO eventos_clustering (
             evento_id, nombre, categoria_evento, tematica,
             poi_id, latitud, longitud, barrio,
-            fecha_inicio, fecha_fin, duracion_dias,
+            fecha_inicio, fecha_fin, hora_inicio, hora_fin, dias_semana, duracion_dias,
             mes_inicio, dia_semana_inicio,
             url_evento,
             fecha_scraping, activo
         ) VALUES (
             %(evento_id)s, %(nombre)s, %(categoria_evento)s, %(tematica)s,
             %(poi_id)s, %(latitud)s, %(longitud)s, %(barrio)s,
-            %(fecha_inicio)s, %(fecha_fin)s, %(duracion_dias)s,
+            %(fecha_inicio)s, %(fecha_fin)s, %(hora_inicio)s, %(hora_fin)s, %(dias_semana)s, %(duracion_dias)s,
             %(mes_inicio)s, %(dia_semana_inicio)s,
             %(url_evento)s,
             %(fecha_scraping)s, %(activo)s
@@ -566,6 +569,9 @@ class ETLProcessor:
                     'barrio': evento['barrio'],
                     'fecha_inicio': fecha_inicio,
                     'fecha_fin': fecha_fin,
+                    'hora_inicio': evento.get('hora_inicio'),  # Can be None
+                    'hora_fin': evento.get('hora_fin'),        # Can be None
+                    'dias_semana': evento.get('dias_semana'), # Can be None
                     'duracion_dias': duracion_dias,
                     'mes_inicio': mes_inicio,
                     'dia_semana_inicio': dia_semana_inicio,

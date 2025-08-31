@@ -890,6 +890,39 @@ class RecommendationService:
             if evento.get('url_evento'):
                 score += 0.1
             
+            # NUEVO: Bonus por proximidad al punto de origen (mismo que POIs)
+            lat_origen = user_prefs.get('latitud_origen')
+            lng_origen = user_prefs.get('longitud_origen')
+            
+            if lat_origen is not None and lng_origen is not None:
+                lat_evento = evento.get('latitud')
+                lng_evento = evento.get('longitud')
+                
+                if lat_evento is not None and lng_evento is not None:
+                    try:
+                        distancia_km = self._calculate_distance(
+                            lat_origen, lng_origen, 
+                            float(lat_evento), float(lng_evento)
+                        )
+                        
+                        # Bonus inversamente proporcional a la distancia (mismo sistema que POIs)
+                        if distancia_km <= 2.0:
+                            score += 0.2
+                        elif distancia_km <= 5.0:
+                            score += 0.15
+                        elif distancia_km <= 10.0:
+                            score += 0.1
+                        # Sin bonus para eventos muy lejanos
+                        
+                        evento['distancia_origen_km'] = round(distancia_km, 2)
+                        
+                    except (ValueError, TypeError):
+                        evento['distancia_origen_km'] = None
+                else:
+                    evento['distancia_origen_km'] = None
+            else:
+                evento['distancia_origen_km'] = None
+            
             # Garantizar score mínimo
             score = max(score, 0.8)  # Aumentado de 0.5 - Eventos tienen score mínimo más alto
             
@@ -930,11 +963,14 @@ class RecommendationService:
         itinerario = []
         max_actividades = min(duracion_horas // 2, 10)  # Más actividades posibles
         
-        # PASO 1: Insertar eventos con sus horarios reales (si los tienen)
+        # PASO 1: Optimizar eventos geográficamente ANTES de programar horarios
         eventos_insertados = 0
         eventos_programados = []
         
-        for evento in eventos[:3]:  # Máximo 3 eventos por día
+        # Optimizar eventos por proximidad al origen (igual que POIs)
+        eventos_optimizados = self._optimize_events_geographically(eventos[:3], lat_origen, lng_origen)
+        
+        for evento in eventos_optimizados:
             if eventos_insertados >= max_actividades // 3:  # No más del 33% eventos
                 break
                 
@@ -962,6 +998,109 @@ class RecommendationService:
         
         logger.info(f"Ruta optimizada: {len(itinerario_final)} actividades ({eventos_insertados} eventos)")
         return itinerario_final
+    
+    def _optimize_events_geographically(self, eventos: List[Dict], lat_origen: float = None, lng_origen: float = None) -> List[Dict]:
+        """
+        Optimizar eventos considerando horarios fijos y optimización geográfica
+        
+        ESTRATEGIA HÍBRIDA:
+        1. Eventos con hora_inicio fija: Se colocan en orden cronológico
+        2. Eventos flexibles (sin hora_inicio): Se optimizan geográficamente
+        3. Se evitan conflictos de horarios
+        """
+        if not eventos:
+            return []
+
+        logger.info(f"Optimizando {len(eventos)} eventos (híbrido: horarios fijos + geográfico)")
+
+        # Separar eventos por tipo de horario
+        eventos_fijos = []      # Con hora_inicio específica
+        eventos_flexibles = []  # Sin hora_inicio (pueden optimizarse)
+
+        for evento in eventos:
+            hora_inicio = evento.get('hora_inicio')
+            if hora_inicio is not None:
+                # Evento con horario fijo
+                try:
+                    if isinstance(hora_inicio, str):
+                        if ':' in hora_inicio:
+                            hora = int(hora_inicio.split(':')[0])
+                        else:
+                            hora = int(hora_inicio)
+                    else:
+                        hora = int(hora_inicio)
+                    
+                    evento['hora_programada'] = hora
+                    eventos_fijos.append(evento)
+                    logger.info(f"Evento FIJO: {evento['nombre']} a las {hora_inicio}")
+                except (ValueError, TypeError):
+                    # Si hay error parsing, tratarlo como flexible
+                    eventos_flexibles.append(evento)
+            else:
+                # Evento flexible
+                eventos_flexibles.append(evento)
+
+        logger.info(f"Eventos con horario fijo: {len(eventos_fijos)}")
+        logger.info(f"Eventos flexibles: {len(eventos_flexibles)}")
+
+        # 1. ORDENAR EVENTOS FIJOS POR HORARIO
+        eventos_fijos.sort(key=lambda x: x.get('hora_programada', 24))
+
+        # 2. OPTIMIZAR EVENTOS FLEXIBLES GEOGRÁFICAMENTE
+        eventos_flexibles_optimizados = []
+        if eventos_flexibles and lat_origen is not None and lng_origen is not None:
+            # Filtrar eventos flexibles con coordenadas válidas
+            eventos_con_coords = []
+            for evento in eventos_flexibles:
+                lat = evento.get('latitud')
+                lng = evento.get('longitud')
+                if lat is not None and lng is not None:
+                    try:
+                        evento['lat_float'] = float(lat)
+                        evento['lng_float'] = float(lng)
+                        eventos_con_coords.append(evento)
+                    except (ValueError, TypeError):
+                        eventos_flexibles_optimizados.append(evento)  # Sin coords válidas
+
+            # Optimizar geográficamente los que tienen coordenadas
+            if eventos_con_coords:
+                eventos_scored = []
+                for evento in eventos_con_coords:
+                    distancia = self._calculate_distance(
+                        lat_origen, lng_origen,
+                        evento['lat_float'], evento['lng_float']
+                    )
+                    
+                    # Ponderar distancia vs score (70% distancia, 30% score)
+                    score_normalizado = evento.get('score_personalizado', 0) / 2.0
+                    factor_combinado = (distancia * 0.7) - (score_normalizado * 0.3)
+                    
+                    evento['factor_optimizacion'] = factor_combinado
+                    eventos_scored.append(evento)
+
+                # Ordenar por factor combinado (menor es mejor)
+                eventos_con_coords_optimizados = sorted(eventos_scored, key=lambda x: x['factor_optimizacion'])
+                eventos_flexibles_optimizados.extend(eventos_con_coords_optimizados)
+                logger.info(f"Optimizados geográficamente: {len(eventos_con_coords_optimizados)} eventos flexibles")
+        else:
+            # Sin coordenadas de origen, ordenar por score
+            eventos_flexibles_optimizados = sorted(eventos_flexibles, key=lambda x: x.get('score_personalizado', 0), reverse=True)
+
+        # 3. COMBINAR ESTRATÉGICAMENTE
+        # Priorizar eventos fijos por su horario, intercalar flexibles optimizados
+        resultado_final = []
+        
+        # Si hay eventos fijos, respetamos sus horarios
+        if eventos_fijos:
+            resultado_final.extend(eventos_fijos)
+            # Intercalar eventos flexibles si quedan espacios
+            resultado_final.extend(eventos_flexibles_optimizados)
+        else:
+            # Solo eventos flexibles, usar optimización geográfica pura
+            resultado_final = eventos_flexibles_optimizados
+
+        logger.info(f"Optimización híbrida completada: {len(resultado_final)} eventos ordenados")
+        return resultado_final
     
     def _extract_event_time(self, evento: Dict) -> int:
         """

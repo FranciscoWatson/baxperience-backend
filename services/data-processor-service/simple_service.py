@@ -508,7 +508,17 @@ class DataProcessorService:
                     # Ubicación
                     latitud = None
                     longitud = None
-                    if event.get('coordenadas'):
+                    
+                    # Primero intentar obtener coordenadas directamente del scraper
+                    if event.get('latitud') is not None and event.get('longitud') is not None:
+                        try:
+                            latitud = float(event['latitud'])
+                            longitud = float(event['longitud'])
+                        except (ValueError, TypeError):
+                            pass
+                    
+                    # Fallback: buscar coordenadas en formato array (compatibilidad)
+                    if latitud is None and event.get('coordenadas'):
                         try:
                             coords = event['coordenadas']
                             if isinstance(coords, list) and len(coords) >= 2:
@@ -518,7 +528,7 @@ class DataProcessorService:
                             pass
                     
                     barrio = event.get('barrio', '')[:100]
-                    direccion = event.get('direccion', '')
+                    direccion = event.get('direccion_evento', event.get('direccion', ''))
                     
                     # Fechas y horarios
                     fecha_inicio = event.get('fecha_inicio', '2025-08-27')  # Default mañana
@@ -528,7 +538,7 @@ class DataProcessorService:
                     dias_semana = event.get('dias_semana', '')[:7]
                     
                     # URLs y contacto
-                    url_evento = event.get('url', '')[:500]
+                    url_evento = event.get('url_evento', event.get('url', ''))[:500]
                     telefono = event.get('telefono', '')[:50]
                     email = event.get('email', '')[:255]
                     
