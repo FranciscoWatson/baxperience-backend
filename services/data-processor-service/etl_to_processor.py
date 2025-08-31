@@ -283,33 +283,6 @@ class ETLProcessor:
         CREATE INDEX idx_clustering_barrio ON lugares_clustering(barrio) WHERE barrio IS NOT NULL;
         CREATE INDEX idx_clustering_valoracion ON lugares_clustering(valoracion_promedio DESC, numero_valoraciones DESC);
         
-        -- Tabla de métricas agregadas por barrio/comuna
-        DROP TABLE IF EXISTS metricas_barrio CASCADE;
-        CREATE TABLE metricas_barrio (
-            id SERIAL PRIMARY KEY,
-            barrio VARCHAR(100),
-            comuna INTEGER,
-            
-            -- Conteos por categoría
-            total_pois INTEGER DEFAULT 0,
-            total_museos INTEGER DEFAULT 0,
-            total_gastronomia INTEGER DEFAULT 0,
-            total_monumentos INTEGER DEFAULT 0,
-            total_entretenimiento INTEGER DEFAULT 0,
-            
-            -- Métricas de calidad
-            valoracion_promedio_barrio DECIMAL(3,2) DEFAULT 0.0,
-            densidad_poi_km2 DECIMAL(8,2) DEFAULT 0.0,
-            
-            -- Coordenadas del centroide del barrio
-            centroide_lat DECIMAL(10, 8),
-            centroide_lng DECIMAL(11, 8),
-            
-            fecha_calculo TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            
-            UNIQUE(barrio, comuna)
-        );
-        
         -- Tabla de eventos activos para clustering temporal
         DROP TABLE IF EXISTS eventos_clustering CASCADE;
         CREATE TABLE eventos_clustering (
@@ -517,50 +490,6 @@ class ETLProcessor:
             return False
         
         return True  # Default conservador
-        
-    def calculate_barrio_metrics(self) -> int:
-        """Calcular métricas agregadas por barrio"""
-        logger.info("Calculando métricas por barrio...")
-        
-        proc_cursor = self.processor_conn.cursor()
-        
-        # Limpiar tabla existente
-        proc_cursor.execute("DELETE FROM metricas_barrio")
-        
-        # Calcular métricas agregadas
-        metrics_query = """
-        INSERT INTO metricas_barrio (
-            barrio, comuna,
-            total_pois, total_museos, total_gastronomia, 
-            total_monumentos, total_entretenimiento,
-            valoracion_promedio_barrio,
-            centroide_lat, centroide_lng
-        )
-        SELECT 
-            barrio,
-            comuna,
-            COUNT(*) as total_pois,
-            SUM(CASE WHEN categoria = 'Museos' THEN 1 ELSE 0 END) as total_museos,
-            SUM(CASE WHEN categoria = 'Gastronomía' THEN 1 ELSE 0 END) as total_gastronomia,
-            SUM(CASE WHEN categoria = 'Monumentos' THEN 1 ELSE 0 END) as total_monumentos,
-            SUM(CASE WHEN categoria = 'Entretenimiento' THEN 1 ELSE 0 END) as total_entretenimiento,
-            AVG(valoracion_promedio) as valoracion_promedio_barrio,
-            AVG(latitud) as centroide_lat,
-            AVG(longitud) as centroide_lng
-        FROM lugares_clustering
-        WHERE barrio IS NOT NULL AND activo = TRUE
-        GROUP BY barrio, comuna
-        HAVING COUNT(*) >= 2  -- Solo barrios con al menos 2 POIs
-        """
-        
-        proc_cursor.execute(metrics_query)
-        rows_affected = proc_cursor.rowcount
-        
-        self.processor_conn.commit()
-        proc_cursor.close()
-        
-        logger.info(f"Métricas por barrio calculadas: {rows_affected} barrios")
-        return rows_affected
         
     def extract_transform_load_eventos(self) -> int:
         """ETL de eventos activos"""
@@ -843,12 +772,8 @@ class ETLProcessor:
                 logger.info(f"📋 PASO 3: POIs ya existen ({existing_pois}), saltando carga de CSV")
                 results['pois'] = existing_pois
             
-            # PASO 4: Calcular métricas por barrio
-            logger.info("📊 PASO 4: Calculando métricas por barrio...")
-            results['barrios'] = self.calculate_barrio_metrics()
-            
-            # PASO 5: Siempre procesar eventos (se limpian y recargan)
-            logger.info("📅 PASO 5: Procesando eventos desde BD operacional...")
+            # PASO 4: Siempre procesar eventos (se limpian y recargan)
+            logger.info("📅 PASO 4: Procesando eventos desde BD operacional...")
             results['eventos'] = self.extract_transform_load_eventos()
             
             logger.info("✅ ETL completado exitosamente!")

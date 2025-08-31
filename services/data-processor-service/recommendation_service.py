@@ -243,14 +243,33 @@ class RecommendationService:
             
             # Buscar en cluster_stats si hay información de barrios
             if 'cluster_stats' in dbscan_results:
-                for cluster_id, stats in dbscan_results['cluster_stats'].items():
-                    if 'barrios_incluidos' in stats:
-                        barrios = stats['barrios_incluidos']
-                        # Buscar coincidencia parcial con la zona preferida
-                        for barrio in barrios:
-                            if zona.lower() in barrio.lower() or barrio.lower() in zona.lower():
-                                logger.info(f"Zona '{zona}' encontrada en cluster DBSCAN {cluster_id} (barrio: {barrio})")
-                                return int(cluster_id)
+                cluster_stats = dbscan_results['cluster_stats']
+                
+                # Manejar tanto formato dict como list
+                if isinstance(cluster_stats, dict):
+                    # Formato diccionario: {cluster_id: stats}
+                    for cluster_id, stats in cluster_stats.items():
+                        if isinstance(stats, dict) and 'barrios_incluidos' in stats:
+                            barrios = stats['barrios_incluidos']
+                            # Buscar coincidencia parcial con la zona preferida
+                            for barrio in barrios:
+                                if zona.lower() in barrio.lower() or barrio.lower() in zona.lower():
+                                    logger.info(f"Zona '{zona}' encontrada en cluster DBSCAN {cluster_id} (barrio: {barrio})")
+                                    return int(cluster_id)
+                
+                elif isinstance(cluster_stats, list):
+                    # Formato lista: [{cluster_id: ..., barrios: ...}, ...]
+                    for item in cluster_stats:
+                        if isinstance(item, dict):
+                            cluster_id = item.get('cluster_id')
+                            barrios = item.get('barrios_incluidos', item.get('barrios', []))
+                            
+                            if cluster_id is not None and barrios:
+                                # Buscar coincidencia parcial con la zona preferida
+                                for barrio in barrios:
+                                    if zona.lower() in barrio.lower() or barrio.lower() in zona.lower():
+                                        logger.info(f"Zona '{zona}' encontrada en cluster DBSCAN {cluster_id} (barrio: {barrio})")
+                                        return int(cluster_id)
             
             logger.info(f"No se encontró cluster específico para zona '{zona}', usando filtrado tradicional")
             return None
@@ -272,9 +291,23 @@ class RecommendationService:
                 if 'poi_clusters' in dbscan_results:
                     # Filtrar POIs que pertenecen al cluster geográfico
                     cluster_poi_ids = []
-                    for poi_id, poi_cluster in dbscan_results['poi_clusters'].items():
-                        if poi_cluster == cluster_geografico:
-                            cluster_poi_ids.append(poi_id)
+                    poi_clusters = dbscan_results['poi_clusters']
+                    
+                    # Manejar tanto formato dict como list
+                    if isinstance(poi_clusters, dict):
+                        # Formato diccionario: {poi_id: cluster_id}
+                        for poi_id, poi_cluster in poi_clusters.items():
+                            if poi_cluster == cluster_geografico:
+                                cluster_poi_ids.append(poi_id)
+                    
+                    elif isinstance(poi_clusters, list):
+                        # Formato lista: [{poi_id: ..., cluster_id: ...}, ...]
+                        for item in poi_clusters:
+                            if isinstance(item, dict):
+                                poi_id = item.get('poi_id')
+                                poi_cluster = item.get('cluster_id', item.get('cluster'))
+                                if poi_cluster == cluster_geografico and poi_id is not None:
+                                    cluster_poi_ids.append(poi_id)
                     
                     if cluster_poi_ids:
                         # Agregar filtro por IDs de POIs del cluster
@@ -1002,20 +1035,50 @@ class RecommendationService:
             # Agrupar POIs por cluster DBSCAN
             clusters = {}
             noise_pois = []
+            poi_clusters = dbscan_results['poi_clusters']
             
-            for poi in pois:
-                poi_id = poi.get('poi_id')
-                if poi_id and str(poi_id) in dbscan_results['poi_clusters']:
-                    cluster_id = dbscan_results['poi_clusters'][str(poi_id)]
-                    
-                    if cluster_id == -1:  # Ruido en DBSCAN
-                        noise_pois.append(poi)
+            # Manejar tanto formato dict como list para poi_clusters
+            if isinstance(poi_clusters, dict):
+                # Formato diccionario: {poi_id: cluster_id}
+                for poi in pois:
+                    poi_id = poi.get('poi_id')
+                    if poi_id and str(poi_id) in poi_clusters:
+                        cluster_id = poi_clusters[str(poi_id)]
+                        
+                        if cluster_id == -1:  # Ruido en DBSCAN
+                            noise_pois.append(poi)
+                        else:
+                            if cluster_id not in clusters:
+                                clusters[cluster_id] = []
+                            clusters[cluster_id].append(poi)
                     else:
-                        if cluster_id not in clusters:
-                            clusters[cluster_id] = []
-                        clusters[cluster_id].append(poi)
-                else:
-                    noise_pois.append(poi)
+                        noise_pois.append(poi)
+            
+            elif isinstance(poi_clusters, list):
+                # Formato lista: [{poi_id: ..., cluster_id: ...}, ...]
+                # Crear un diccionario temporal para búsqueda rápida
+                poi_cluster_map = {}
+                for item in poi_clusters:
+                    if isinstance(item, dict):
+                        poi_id = item.get('poi_id')
+                        cluster_id = item.get('cluster_id', item.get('cluster'))
+                        if poi_id is not None and cluster_id is not None:
+                            poi_cluster_map[str(poi_id)] = cluster_id
+                
+                # Agrupar POIs usando el mapa
+                for poi in pois:
+                    poi_id = poi.get('poi_id')
+                    if poi_id and str(poi_id) in poi_cluster_map:
+                        cluster_id = poi_cluster_map[str(poi_id)]
+                        
+                        if cluster_id == -1:  # Ruido en DBSCAN
+                            noise_pois.append(poi)
+                        else:
+                            if cluster_id not in clusters:
+                                clusters[cluster_id] = []
+                            clusters[cluster_id].append(poi)
+                    else:
+                        noise_pois.append(poi)
             
             # Ordenar clusters por número de POIs (priorizar clusters densos)
             sorted_clusters = sorted(clusters.items(), key=lambda x: len(x[1]), reverse=True)
