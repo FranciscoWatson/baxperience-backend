@@ -258,6 +258,16 @@ class DataProcessorService:
                 self._publish_itinerary_error(request_id, error_msg)
                 return
             
+            # Validar coordenadas obligatorias
+            latitud_origen = request_data.get('latitud_origen')
+            longitud_origen = request_data.get('longitud_origen')
+            
+            if latitud_origen is None or longitud_origen is None:
+                error_msg = "Coordenadas de origen (latitud_origen, longitud_origen) son obligatorias"
+                logger.error(f"❌ {error_msg}")
+                self._publish_itinerary_error(request_id, error_msg)
+                return
+            
             # Importar y usar el servicio de recomendaciones
             try:
                 from recommendation_service import RecommendationService

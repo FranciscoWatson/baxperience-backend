@@ -91,11 +91,10 @@ class RecommendationService:
                 logger.info("Conectado a BD Operacional para obtener preferencias")
             except Exception as e:
                 logger.error(f"Error conectando a BD Operacional: {e}")
-                # Retornar preferencias por defecto si no se puede conectar
+            # Retornar preferencias por defecto si no se puede conectar
                 return {
                     'categorias_preferidas': ['Museos', 'Gastronomía'],
                     'zona_preferida': 'Palermo',
-                    'presupuesto': 'medio',
                     'tipo_compania': 'pareja',
                     'duracion_preferida': 8,  # horas
                     'actividades_evitar': ['Entretenimiento']
@@ -117,7 +116,6 @@ class RecommendationService:
                 return {
                     'categorias_preferidas': ['Museos', 'Gastronomía'],
                     'zona_preferida': 'Palermo',
-                    'presupuesto': 'medio',
                     'tipo_compania': 'pareja',
                     'duracion_preferida': 8,
                     'actividades_evitar': ['Entretenimiento']
@@ -147,9 +145,8 @@ class RecommendationService:
             if not categorias_preferidas:
                 categorias_preferidas = ['Museos', 'Gastronomía']
             
-            # Mapear tipo_viajero a zona preferida y presupuesto
+            # Mapear tipo_viajero a zona preferida y tipo de compañía
             zona_preferida = 'Palermo'  # Default
-            presupuesto = 'medio'       # Default
             tipo_compania = 'solo'      # Default
             
             if user_info[1]:  # tipo_viajero
@@ -169,14 +166,6 @@ class RecommendationService:
                 else:
                     zona_preferida = 'Palermo'  # Default para urbano, etc.
                 
-                # Mapear presupuesto según tipo
-                if 'low-cost' in tipo_lower:
-                    presupuesto = 'bajo'
-                elif 'foodie' in tipo_lower or 'gastrónomo' in tipo_lower:
-                    presupuesto = 'alto'
-                else:
-                    presupuesto = 'medio'
-                
                 # Mapear tipo de compañía
                 if 'pareja' in tipo_lower:
                     tipo_compania = 'pareja'
@@ -191,7 +180,6 @@ class RecommendationService:
             resultado = {
                 'categorias_preferidas': categorias_preferidas,
                 'zona_preferida': zona_preferida,
-                'presupuesto': presupuesto,
                 'tipo_compania': tipo_compania,
                 'duracion_preferida': duracion_preferida,
                 'actividades_evitar': actividades_evitar
@@ -206,7 +194,6 @@ class RecommendationService:
             return {
                 'categorias_preferidas': ['Museos', 'Gastronomía'],
                 'zona_preferida': 'Palermo',
-                'presupuesto': 'medio',
                 'tipo_compania': 'pareja',
                 'duracion_preferida': 8,
                 'actividades_evitar': ['Entretenimiento']
@@ -224,9 +211,15 @@ class RecommendationService:
         try:
             # Construir filtros basados en preferencias
             categorias = user_prefs.get('categorias_preferidas', [])
-            zona = user_prefs.get('zona_preferida', '')
+            zona = user_prefs.get('zona_preferida', '')  # Puede ser None o string
             actividades_evitar = user_prefs.get('actividades_evitar', [])
             fecha_visita = user_prefs.get('fecha_visita', datetime.now().date().isoformat())
+            
+            # Obtener coordenadas de origen para cálculos de distancia (futuro uso)
+            latitud_origen = user_prefs.get('latitud_origen')
+            longitud_origen = user_prefs.get('longitud_origen')
+            
+            logger.info(f"Filtrando POIs desde punto origen: lat={latitud_origen}, lng={longitud_origen}, zona_pref={zona}")
             
             # === IMPLEMENTAR SAMPLING BALANCEADO POR CATEGORÍA ===
             pois_balanceados = []
@@ -461,11 +454,16 @@ class RecommendationService:
     def calculate_poi_scores(self, pois: List[Dict], user_prefs: Dict) -> List[Dict]:
         """
         Calcular scores personalizados para cada POI
+        MEJORADO: Considera distancia desde punto de origen
         """
         logger.info("Calculando scores personalizados...")
         
         if not pois:
             return []
+        
+        # Obtener coordenadas de origen para cálculos de proximidad
+        lat_origen = user_prefs.get('latitud_origen')
+        lng_origen = user_prefs.get('longitud_origen')
         
         scored_pois = []
         
@@ -494,14 +492,14 @@ class RecommendationService:
                 score += 0.05  # Nuevo: puntos por tener email
             
             # Bonus por características específicas
-            if poi.get('es_gratuito') and user_prefs.get('presupuesto') == 'bajo':
-                score += 0.2  # Más puntos si necesita bajo presupuesto
+            if poi.get('es_gratuito'):
+                score += 0.1  # Pequeño bonus por ser gratuito
             
-            # Bonus por zona preferida
+            # Bonus por zona preferida - con más peso si se especifica zona
             zona_pref = user_prefs.get('zona_preferida', '')
             barrio_poi = poi.get('barrio', '') or ''
             if zona_pref and zona_pref.lower() in barrio_poi.lower():
-                score += 0.2
+                score += 0.3  # Aumentado el bonus por zona preferida
             
             # Bonus por tipo de compañía
             if user_prefs.get('tipo_compania') == 'pareja':
@@ -510,15 +508,47 @@ class RecommendationService:
                 elif poi.get('categoria') == 'Museos':
                     score += 0.1   # Museos también buenos para parejas
             
-            # Bonus/penalización por presupuesto
-            if user_prefs.get('presupuesto') == 'bajo':
-                if poi.get('es_gratuito'):
-                    score += 0.2  # Gran bonus para actividades gratuitas
+            # NUEVO: Bonus por categorías preferidas del usuario (desde BD)
+            categorias_preferidas = user_prefs.get('categorias_preferidas', [])
+            if categorias_preferidas and poi.get('categoria') in categorias_preferidas:
+                score += 0.25  # Bonus significativo para categorías preferidas
+                logger.debug(f"Bonus categoría preferida aplicado a {poi.get('nombre')}: {poi.get('categoria')}")
+            
+            # Bonus adicional para actividades gratuitas (sin considerar presupuesto)
+            if poi.get('es_gratuito'):
+                score += 0.05  # Pequeño bonus adicional
+            
+            # NUEVO: Bonus por proximidad al punto de origen
+            if lat_origen is not None and lng_origen is not None:
+                lat_poi = poi.get('latitud')
+                lng_poi = poi.get('longitud')
+                
+                if lat_poi is not None and lng_poi is not None:
+                    try:
+                        distancia_km = self._calculate_distance(
+                            lat_origen, lng_origen, 
+                            float(lat_poi), float(lng_poi)
+                        )
+                        
+                        # Bonus inversamente proporcional a la distancia
+                        # POIs a menos de 2km: bonus máximo (0.2)
+                        # POIs a más de 10km: bonus mínimo (0.0)
+                        if distancia_km <= 2.0:
+                            score += 0.2
+                        elif distancia_km <= 5.0:
+                            score += 0.15
+                        elif distancia_km <= 10.0:
+                            score += 0.1
+                        # Sin bonus para POIs muy lejanos
+                        
+                        poi['distancia_origen_km'] = round(distancia_km, 2)
+                        
+                    except (ValueError, TypeError):
+                        poi['distancia_origen_km'] = None
                 else:
-                    score -= 0.1  # Penalización para actividades de pago
-            elif user_prefs.get('presupuesto') == 'alto':
-                if poi.get('categoria') == 'Gastronomía':
-                    score += 0.1  # Bonus para gastronomía con presupuesto alto
+                    poi['distancia_origen_km'] = None
+            else:
+                poi['distancia_origen_km'] = None
             
             # Garantizar score mínimo
             score = max(score, 0.1)
@@ -530,6 +560,12 @@ class RecommendationService:
         scored_pois.sort(key=lambda x: x['score_personalizado'], reverse=True)
         
         logger.info(f"Scores calculados para {len(scored_pois)} POIs")
+        if lat_origen is not None and lng_origen is not None:
+            pois_con_distancia = [p for p in scored_pois if p.get('distancia_origen_km') is not None]
+            if pois_con_distancia:
+                dist_promedio = sum(p['distancia_origen_km'] for p in pois_con_distancia) / len(pois_con_distancia)
+                logger.info(f"Distancia promedio desde origen: {dist_promedio:.2f}km")
+        
         return scored_pois
     
     def calculate_event_scores(self, eventos: List[Dict], user_prefs: Dict) -> List[Dict]:
@@ -565,9 +601,9 @@ class RecommendationService:
             if duracion_dias and duracion_dias > 1:
                 score += 0.15  # Aumentado de 0.1
             
-            # Bonus por presupuesto bajo (eventos suelen ser gratuitos)
-            if user_prefs.get('presupuesto') == 'bajo':
-                score += 0.3  # Aumentado de 0.25
+            # Bonus general para eventos gratuitos (suelen ser gratuitos)
+            if evento.get('es_gratuito'):
+                score += 0.2  # Aumentado de 0.15
             
             # Bonus por categoría cultural para ciertos tipos de compañía
             categoria_evento = evento.get('categoria', '').lower()
@@ -614,12 +650,13 @@ class RecommendationService:
         logger.info(f"Scores calculados para {len(scored_events)} eventos")
         return scored_events
     
-    def optimize_route_with_events(self, items_selected: List[Dict], duracion_horas: int, hora_inicio: str = '10:00') -> List[Dict]:
+    def optimize_route_with_events(self, items_selected: List[Dict], duracion_horas: int, hora_inicio: str = '10:00', lat_origen: float = None, lng_origen: float = None) -> List[Dict]:
         """
         Optimizar ruta incluyendo eventos con consideraciones temporales y geográficas
-        MEJORADO: Considera horario de inicio real del itinerario
+        MEJORADO: Considera horario de inicio real del itinerario y punto de origen
         """
         logger.info(f"Optimizando ruta con POIs y eventos para {duracion_horas}h desde {hora_inicio}...")
+        logger.info(f"Punto de origen: lat={lat_origen}, lng={lng_origen}")
         
         if not items_selected:
             return []
@@ -662,8 +699,8 @@ class RecommendationService:
             eventos_programados.append(actividad)
             eventos_insertados += 1
         
-        # PASO 2: Optimizar POIs geográficamente
-        pois_optimizados = self._optimize_geographic_route(pois, max_actividades - eventos_insertados)
+        # PASO 2: Optimizar POIs geográficamente desde el punto de origen
+        pois_optimizados = self._optimize_geographic_route(pois, max_actividades - eventos_insertados, lat_origen, lng_origen)
         
         # PASO 3: Intercalar eventos y POIs optimizando horarios
         itinerario_final = self._merge_events_and_pois_improved(
@@ -694,9 +731,10 @@ class RecommendationService:
                 pass
         return None
     
-    def _optimize_geographic_route(self, pois: List[Dict], max_pois: int) -> List[Dict]:
+    def _optimize_geographic_route(self, pois: List[Dict], max_pois: int, lat_origen: float = None, lng_origen: float = None) -> List[Dict]:
         """
         Optimizar POIs por proximidad geográfica usando algoritmo greedy
+        MEJORADO: Considera punto de origen para empezar la ruta
         """
         if not pois or max_pois <= 0:
             return []
@@ -718,14 +756,47 @@ class RecommendationService:
             # Si no hay coordenadas, usar los primeros POIs
             return pois[:max_pois]
         
-        # Algoritmo greedy para ruta más corta
+        # Algoritmo greedy para ruta más corta desde punto de origen
         ruta_optimizada = []
         pois_disponibles = pois_con_coords[:]
         
-        # Empezar con el POI con mejor score
-        pois_disponibles.sort(key=lambda x: x.get('score_personalizado', 0), reverse=True)
-        actual = pois_disponibles.pop(0)
-        ruta_optimizada.append(actual)
+        # Si tenemos punto de origen, empezar desde el POI más cercano al origen
+        if lat_origen is not None and lng_origen is not None:
+            logger.info(f"Iniciando ruta desde origen: lat={lat_origen}, lng={lng_origen}")
+            
+            # Encontrar el POI más cercano al punto de origen
+            mejor_poi = None
+            menor_distancia = float('inf')
+            
+            for poi in pois_disponibles:
+                distancia = self._calculate_distance(
+                    lat_origen, lng_origen,
+                    poi['lat_float'], poi['lng_float']
+                )
+                
+                # Ponderar distancia vs score (70% distancia, 30% score)
+                score_normalizado = poi.get('score_personalizado', 0) / 2.0
+                factor_combinado = (distancia * 0.7) - (score_normalizado * 0.3)
+                
+                if factor_combinado < menor_distancia:
+                    menor_distancia = factor_combinado
+                    mejor_poi = poi
+            
+            if mejor_poi:
+                actual = mejor_poi
+                pois_disponibles.remove(actual)
+                ruta_optimizada.append(actual)
+                logger.info(f"Primer POI desde origen: {actual.get('nombre')} (distancia: {menor_distancia:.2f}km)")
+            else:
+                # Fallback: empezar con el POI con mejor score
+                pois_disponibles.sort(key=lambda x: x.get('score_personalizado', 0), reverse=True)
+                actual = pois_disponibles.pop(0)
+                ruta_optimizada.append(actual)
+        else:
+            # Sin punto de origen: empezar con el POI con mejor score
+            pois_disponibles.sort(key=lambda x: x.get('score_personalizado', 0), reverse=True)
+            actual = pois_disponibles.pop(0)
+            ruta_optimizada.append(actual)
         
         # Añadir POIs más cercanos iterativamente
         while len(ruta_optimizada) < max_pois and pois_disponibles:
@@ -831,7 +902,7 @@ class RecommendationService:
     def _merge_events_and_pois_improved(self, eventos: List[Dict], pois: List[Dict], duracion_horas: int, hora_inicio_int: int) -> List[Dict]:
         """
         Combinar eventos y POIs en un itinerario temporal coherente
-        MEJORADO: Considera horario de inicio real del itinerario
+        MEJORADO: Considera horario de inicio real del itinerario y horarios de comida
         """
         itinerario_final = []
         
@@ -839,28 +910,56 @@ class RecommendationService:
         actividades_pois = []
         hora_actual = hora_inicio_int  # Empezar a la hora de inicio del itinerario
         
-        for i, poi in enumerate(pois):
+        # Separar gastronomía del resto para programación inteligente
+        pois_gastronomia = [poi for poi in pois if poi.get('categoria') == 'Gastronomía']
+        pois_otros = [poi for poi in pois if poi.get('categoria') != 'Gastronomía']
+        
+        logger.info(f"Programando actividades: {len(pois_gastronomia)} gastronomía, {len(pois_otros)} otros")
+        
+        # Identificar horarios de comida según duración del itinerario
+        horarios_comida = []
+        hora_fin_itinerario = hora_inicio_int + duracion_horas
+        
+        # Almuerzo (12:00-15:00)
+        if hora_inicio_int <= 13 and hora_fin_itinerario >= 12:
+            horarios_comida.append(('almuerzo', 13, 90))  # 13:00, 1.5 horas
+        
+        # Cena (19:00-21:00) - solo si el itinerario es suficientemente largo
+        if duracion_horas >= 6 and hora_fin_itinerario >= 19:
+            horarios_comida.append(('cena', 19, 90))  # 19:00, 1.5 horas
+        
+        logger.info(f"Horarios de comida identificados: {[h[0] for h in horarios_comida]}")
+        
+        # Programar gastronomía en horarios de comida
+        gastronomia_programada = 0
+        for tipo_comida, hora_comida, duracion in horarios_comida:
+            if gastronomia_programada < len(pois_gastronomia):
+                # Verificar que no conflicte con eventos
+                if not self._hour_conflicts_with_events(hora_comida, duracion, eventos):
+                    poi_gastro = pois_gastronomia[gastronomia_programada]
+                    actividad = self._create_activity_from_item(poi_gastro, hora_comida, duracion, len(actividades_pois) + 1)
+                    actividad['tipo_actividad'] = f'Comida ({tipo_comida})'
+                    actividades_pois.append(actividad)
+                    gastronomia_programada += 1
+                    logger.info(f"Gastronomía programada en {tipo_comida}: {poi_gastro.get('nombre')}")
+        
+        # Programar el resto de POIs en horarios disponibles
+        pois_restantes = pois_gastronomia[gastronomia_programada:] + pois_otros
+        
+        for i, poi in enumerate(pois_restantes):
             # Determinar duración según categoría
             if poi.get('categoria') == 'Gastronomía':
                 duracion = 90  # 1.5 horas para comer
-                # Programar comidas en horarios apropiados
-                if len(actividades_pois) == 0:
-                    hora_actual = 12  # Primera comida al mediodía
-                elif len(actividades_pois) >= 3:
-                    hora_actual = max(hora_actual, 19)  # Cena
             else:
                 duracion = 120  # 2 horas para visitas
             
-            # Evitar conflictos con eventos ya programados
-            while self._hour_conflicts_with_events(hora_actual, duracion, eventos):
-                hora_actual += 1
-                if hora_actual >= 20:  # No más allá de las 8 PM
-                    break
+            # Encontrar horario disponible
+            hora_disponible = self._find_available_hour(hora_actual, hora_fin_itinerario, duracion, eventos, actividades_pois)
             
-            if hora_actual < 20:
-                actividad = self._create_activity_from_item(poi, hora_actual, duracion, i + 1)
+            if hora_disponible and hora_disponible < hora_fin_itinerario:
+                actividad = self._create_activity_from_item(poi, hora_disponible, duracion, len(actividades_pois) + 1)
                 actividades_pois.append(actividad)
-                hora_actual += (duracion // 60) + 1  # +1 hora de buffer
+                hora_actual = hora_disponible + (duracion // 60) + 1  # +1 hora de buffer
         
         # Combinar eventos y POIs
         todas_actividades = eventos + actividades_pois
@@ -873,6 +972,33 @@ class RecommendationService:
             actividad['orden_visita'] = i + 1
         
         return todas_actividades
+    
+    def _find_available_hour(self, hora_inicio: int, hora_fin: int, duracion_min: int, eventos: List[Dict], actividades_programadas: List[Dict]) -> int:
+        """Encontrar horario disponible evitando conflictos"""
+        for hora in range(hora_inicio, hora_fin):
+            if hora + (duracion_min // 60) > hora_fin:
+                break
+                
+            # Verificar conflictos con eventos
+            if self._hour_conflicts_with_events(hora, duracion_min, eventos):
+                continue
+            
+            # Verificar conflictos con actividades ya programadas
+            conflicto = False
+            for act in actividades_programadas:
+                act_inicio = int(act['horario_inicio'].split(':')[0])
+                act_duracion = act.get('duracion_minutos', 120)
+                act_fin = act_inicio + (act_duracion // 60)
+                
+                # Verificar solapamiento
+                if not (hora + (duracion_min // 60) <= act_inicio or hora >= act_fin):
+                    conflicto = True
+                    break
+            
+            if not conflicto:
+                return hora
+        
+        return None
     
     def _hour_conflicts_with_events(self, hora: int, duracion_min: int, eventos: List[Dict]) -> bool:
         """
@@ -893,7 +1019,7 @@ class RecommendationService:
     def _select_balanced_items(self, pois_scored: List[Dict], eventos_scored: List[Dict], user_prefs: Dict) -> List[Dict]:
         """
         Seleccionar items balanceando categorías preferidas y eventos
-        MEJORADO: Considera horario de inicio y balance realista
+        MEJORADO: Considera horario de inicio y balance realista + garantiza gastronomía si es preferida
         """
         logger.info("Seleccionando items balanceados...")
         
@@ -927,18 +1053,54 @@ class RecommendationService:
         
         logger.info(f"Eventos seleccionados: {len(eventos_elegidos)}")
         
-        # PASO 2: Seleccionar POIs balanceando categorías preferidas
+        # PASO 2: GARANTIZAR GASTRONOMÍA SI ES PREFERIDA
+        pois_gastronomia = [poi for poi in pois_scored if poi.get('categoria') == 'Gastronomía']
+        pois_no_gastronomia = [poi for poi in pois_scored if poi.get('categoria') != 'Gastronomía']
+        
+        gastronomia_incluida = False
+        pois_finales = []
+        
+        # Si gastronomía está en categorías preferidas, incluir al menos 1
+        if categorias_preferidas and 'Gastronomía' in categorias_preferidas and pois_gastronomia:
+            # Incluir al menos 1 gastronomía
+            pois_finales.append(pois_gastronomia[0])
+            gastronomia_incluida = True
+            logger.info(f"Gastronomía garantizada incluida: {pois_gastronomia[0].get('nombre')}")
+            
+            # Para itinerarios largos, incluir más gastronomía
+            if duracion_horas >= 8 and len(pois_gastronomia) > 1:
+                pois_finales.append(pois_gastronomia[1])
+                logger.info(f"Segunda gastronomía incluida para itinerario largo")
+        
+        # PASO 3: Completar con otros POIs balanceando categorías preferidas
+        pois_restantes_necesarios = items_pois - len(pois_finales)
+        
         if categorias_preferidas and len(categorias_preferidas) > 1:
             # Múltiples categorías: distribuir equitativamente
             pois_por_categoria = self._distribute_pois_by_category_improved(
-                pois_scored, categorias_preferidas, items_pois, duracion_horas
+                pois_no_gastronomia if gastronomia_incluida else pois_scored, 
+                categorias_preferidas, 
+                pois_restantes_necesarios, 
+                duracion_horas
             )
-            items_seleccionados.extend(pois_por_categoria)
+            pois_finales.extend(pois_por_categoria)
         else:
             # Una sola categoría o sin preferencias: tomar los mejores
-            items_seleccionados.extend(pois_scored[:items_pois])
+            pois_disponibles = pois_no_gastronomia if gastronomia_incluida else pois_scored
+            pois_finales.extend(pois_disponibles[:pois_restantes_necesarios])
+        
+        items_seleccionados.extend(pois_finales)
         
         logger.info(f"Items finales seleccionados: {len(items_seleccionados)} ({len([i for i in items_seleccionados if i.get('item_type') == 'evento'])} eventos)")
+        
+        # Log de categorías seleccionadas
+        categorias_seleccionadas = {}
+        for item in items_seleccionados:
+            if item.get('item_type') != 'evento':
+                cat = item.get('categoria', 'Otros')
+                categorias_seleccionadas[cat] = categorias_seleccionadas.get(cat, 0) + 1
+        
+        logger.info(f"Distribución por categorías: {categorias_seleccionadas}")
         
         return items_seleccionados
     
@@ -1071,11 +1233,13 @@ class RecommendationService:
             # 1. Obtener preferencias del usuario
             user_prefs = self.get_user_preferences(user_id)
             
-            # Combinar con request específico (solo valores no None)
+            # Combinar con request específico (EXCEPTO categorias_preferidas que siempre vienen de BD)
             for key, value in request_data.items():
-                if value is not None:
+                if value is not None and key != 'categorias_preferidas':  # NUNCA override categorías
                     user_prefs[key] = value
             
+            # Log para verificar que categorías vienen de BD
+            logger.info(f"Categorías preferidas (siempre de BD): {user_prefs.get('categorias_preferidas', [])}")
             logger.info(f"Preferencias finales utilizadas: {user_prefs}")
             
             # 2. Filtrar POIs y eventos usando clusters
@@ -1100,12 +1264,17 @@ class RecommendationService:
                 pois_scored, eventos_scored, user_prefs
             )
             
-            # 6. Optimizar ruta
+            # 6. Optimizar ruta desde punto de origen
             hora_inicio = user_prefs.get('hora_inicio', '10:00')
+            lat_origen = user_prefs.get('latitud_origen')
+            lng_origen = user_prefs.get('longitud_origen')
+            
             actividades = self.optimize_route_with_events(
                 items_seleccionados, 
                 user_prefs.get('duracion_horas', user_prefs.get('duracion_preferida', 8)),
-                hora_inicio
+                hora_inicio,
+                lat_origen,
+                lng_origen
             )
             
             if not actividades:
@@ -1361,6 +1530,18 @@ def generate_itinerary_request(user_id: int, request_data: Dict) -> Dict:
     Función principal para generar itinerario
     Esta es la función que llamará el API Gateway
     """
+    
+    # Validar coordenadas obligatorias
+    if 'latitud_origen' not in request_data or 'longitud_origen' not in request_data:
+        return {
+            'error': 'Las coordenadas de origen (latitud_origen, longitud_origen) son obligatorias'
+        }
+    
+    if request_data['latitud_origen'] is None or request_data['longitud_origen'] is None:
+        return {
+            'error': 'Las coordenadas de origen no pueden ser null'
+        }
+    
     service = RecommendationService()
     
     try:

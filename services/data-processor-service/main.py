@@ -142,10 +142,13 @@ class DataProcessorOrchestrator:
             # Simular request de usuario
             user_id = 123
             request_data = {
+                'fecha_visita': '2025-08-30',
+                'hora_inicio': '10:00',
+                'duracion_horas': 8,
+                'latitud_origen': -34.6118,
+                'longitud_origen': -58.3960,
                 'categorias_preferidas': ['Museos', 'Gastronomía'],
                 'zona_preferida': 'Palermo',
-                'duracion_preferida': 8,
-                'presupuesto': 'medio',
                 'tipo_compania': 'pareja'
             }
             

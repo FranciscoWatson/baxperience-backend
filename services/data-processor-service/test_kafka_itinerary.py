@@ -141,9 +141,9 @@ def test_itinerary_scenarios():
                 'fecha_visita': '2025-08-30',
                 'hora_inicio': '10:00',  # Inicio a las 10:00 am
                 'duracion_horas': 6,
-                'categorias_preferidas': None,  # Usar de BD
+                'latitud_origen': -34.6118,
+                'longitud_origen': -58.3960,
                 'zona_preferida': None,  # Usar de BD: Puerto Madero
-                'presupuesto': None  # Usar de BD: alto
             }
         },
         {
@@ -153,20 +153,21 @@ def test_itinerary_scenarios():
                 'fecha_visita': '2025-08-30',
                 'hora_inicio': '14:00',  # Inicio después del almuerzo
                 'duracion_horas': 4,
-                'categorias_preferidas': ['Museos'],  # Override
-                'zona_preferida': 'Recoleta',  # Override
-                'presupuesto': 'medio'
+                'latitud_origen': -34.5875,
+                'longitud_origen': -58.3974,
+                'zona_preferida': 'Recoleta',  # Override de zona
             }
         },
         {
-            'name': 'Aventurera con presupuesto bajo',
+            'name': 'Aventurera con coordenadas específicas',
             'user_id': 4,  # Lucía - aventurera
             'request_data': {
                 'fecha_visita': '2025-08-30',
                 'hora_inicio': '09:00',  # Inicio temprano
                 'duracion_horas': 8,
+                'latitud_origen': -34.6345,
+                'longitud_origen': -58.3635,
                 'zona_preferida': None,  # Usar de BD: La Boca
-                'presupuesto': 'bajo'  # Override
             }
         },
         {
@@ -175,7 +176,9 @@ def test_itinerary_scenarios():
             'request_data': {
                 'fecha_visita': '2025-08-30',
                 'hora_inicio': '11:30',  # Hora justo antes del almuerzo
-                'duracion_horas': 4
+                'duracion_horas': 4,
+                'latitud_origen': -34.6037,
+                'longitud_origen': -58.3816,
             }
         }
     ]
@@ -212,13 +215,22 @@ def test_itinerary_scenarios():
                         print(f"   • Itinerario ID: {data.get('itinerario_id')}")
                         print(f"   • Actividades: {len(actividades)}")
                         print(f"   • Zona usada: {prefs.get('zona_preferida')}")
-                        print(f"   • Presupuesto: {prefs.get('presupuesto')}")
+                        print(f"   • Categorías preferidas (BD): {prefs.get('categorias_preferidas', [])}")
                         print(f"   • Tiempo de procesamiento: {data.get('processing_metadata', {}).get('processing_time_seconds', 'N/A')}s")
                         
                         if actividades:
-                            print(f"   • Primeras actividades:")
-                            for j, act in enumerate(actividades[:3], 1):
-                                print(f"     {j}. {act.get('nombre')} ({act.get('categoria')}, {act.get('barrio')})")
+                            print(f"   📋 TODAS LAS ACTIVIDADES GENERADAS:")
+                            for j, act in enumerate(actividades, 1):
+                                horario = f"{act.get('horario_inicio', 'N/A')} - {act.get('horario_fin', 'N/A')}"
+                                distancia = act.get('distancia_origen_km', 'N/A')
+                                score = act.get('score_personalizado', 'N/A')
+                                item_type = act.get('item_type', 'poi')
+                                print(f"     {j}. {act.get('nombre', 'Sin nombre')} ({act.get('categoria', 'Sin cat')})")
+                                print(f"        ⏰ {horario} | 📍 {act.get('barrio', 'Sin barrio')} | 🎯 Score: {score}")
+                                print(f"        📏 Distancia: {distancia}km | 🏷️ Tipo: {item_type}")
+                                if act.get('valoracion_promedio', 0) > 0:
+                                    print(f"        ⭐ Valoración: {act.get('valoracion_promedio')}/5")
+                                print("")
                     
                     elif response.get('status') == 'error':
                         error = response.get('error', {})
