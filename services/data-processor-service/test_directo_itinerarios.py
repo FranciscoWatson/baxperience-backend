@@ -61,6 +61,30 @@ def test_direct_itinerary():
                 'zona_preferida': 'La Boca',
             }
         },
+        {
+            'name': 'Usuario que prefiere EVENTOS - debe priorizar eventos',
+            'user_id': 4,  # Lucía - Le gustan: Eventos, Gastronomía, Museos
+            'request_data': {
+                'fecha_visita': '2025-08-30',
+                'hora_inicio': '11:00',
+                'duracion_horas': 6,
+                'latitud_origen': -34.6037,
+                'longitud_origen': -58.3816,
+                'zona_preferida': None,  # Usar de BD
+            }
+        },
+        {
+            'name': 'Usuario SIN gastronomía - NO debe incluir horarios de comida',
+            'user_id': 8,  # Camila - Le gustan: Lugares Históricos, Monumentos, Museos (NO Gastronomía)
+            'request_data': {
+                'fecha_visita': '2025-08-30',
+                'hora_inicio': '10:00',
+                'duracion_horas': 6,
+                'latitud_origen': -34.6118,
+                'longitud_origen': -58.3960,
+                'zona_preferida': None,  # Usar de BD
+            }
+        },
     ]
     
     for i, scenario in enumerate(test_scenarios, 1):

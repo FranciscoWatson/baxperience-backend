@@ -508,10 +508,10 @@ class RecommendationService:
                 elif poi.get('categoria') == 'Museos':
                     score += 0.1   # Museos también buenos para parejas
             
-            # NUEVO: Bonus por categorías preferidas del usuario (desde BD)
+            # NUEVO: Bonus por categorías preferidas del usuario (desde BD) - AUMENTADO
             categorias_preferidas = user_prefs.get('categorias_preferidas', [])
             if categorias_preferidas and poi.get('categoria') in categorias_preferidas:
-                score += 0.25  # Bonus significativo para categorías preferidas
+                score += 0.6  # Bonus MUY ALTO para categorías preferidas del usuario
                 logger.debug(f"Bonus categoría preferida aplicado a {poi.get('nombre')}: {poi.get('categoria')}")
             
             # Bonus adicional para actividades gratuitas (sin considerar presupuesto)
@@ -596,6 +596,16 @@ class RecommendationService:
             if zona_pref and zona_pref.lower() in barrio_evento.lower():
                 score += 0.3  # Aumentado de 0.2
             
+            # NUEVO: Bonus por categorías preferidas del usuario (desde BD)
+            # Los eventos son considerados una categoría especial "Eventos"
+            categorias_preferidas = user_prefs.get('categorias_preferidas', [])
+            if categorias_preferidas and 'Eventos' in categorias_preferidas:
+                score += 0.6  # Bonus MUY ALTO si el usuario prefiere eventos
+                logger.debug(f"Bonus categoría 'Eventos' aplicado a evento {evento.get('nombre')}")
+            elif categorias_preferidas:
+                # Bonus menor si no prefiere eventos específicamente pero tiene otras preferencias
+                score += 0.2  # Bonus estándar para eventos cuando hay otras preferencias
+            
             # Bonus por duración del evento (eventos de varios días son más valiosos)
             duracion_dias = evento.get('duracion_dias', 1)
             if duracion_dias and duracion_dias > 1:
@@ -650,7 +660,7 @@ class RecommendationService:
         logger.info(f"Scores calculados para {len(scored_events)} eventos")
         return scored_events
     
-    def optimize_route_with_events(self, items_selected: List[Dict], duracion_horas: int, hora_inicio: str = '10:00', lat_origen: float = None, lng_origen: float = None) -> List[Dict]:
+    def optimize_route_with_events(self, items_selected: List[Dict], duracion_horas: int, hora_inicio: str = '10:00', lat_origen: float = None, lng_origen: float = None, user_prefs: Dict = None) -> List[Dict]:
         """
         Optimizar ruta incluyendo eventos con consideraciones temporales y geográficas
         MEJORADO: Considera horario de inicio real del itinerario y punto de origen
@@ -704,7 +714,7 @@ class RecommendationService:
         
         # PASO 3: Intercalar eventos y POIs optimizando horarios
         itinerario_final = self._merge_events_and_pois_improved(
-            eventos_programados, pois_optimizados, duracion_horas, hora_inicio_int
+            eventos_programados, pois_optimizados, duracion_horas, hora_inicio_int, user_prefs
         )
         
         logger.info(f"Ruta optimizada: {len(itinerario_final)} actividades ({eventos_insertados} eventos)")
@@ -899,10 +909,10 @@ class RecommendationService:
         
         return todas_actividades
     
-    def _merge_events_and_pois_improved(self, eventos: List[Dict], pois: List[Dict], duracion_horas: int, hora_inicio_int: int) -> List[Dict]:
+    def _merge_events_and_pois_improved(self, eventos: List[Dict], pois: List[Dict], duracion_horas: int, hora_inicio_int: int, user_prefs: Dict = None) -> List[Dict]:
         """
         Combinar eventos y POIs en un itinerario temporal coherente
-        MEJORADO: Considera horario de inicio real del itinerario y horarios de comida
+        MEJORADO: Considera horario de inicio real del itinerario y horarios de comida SOLO si gastronomía está en preferencias
         """
         itinerario_final = []
         
@@ -916,35 +926,44 @@ class RecommendationService:
         
         logger.info(f"Programando actividades: {len(pois_gastronomia)} gastronomía, {len(pois_otros)} otros")
         
-        # Identificar horarios de comida según duración del itinerario
+        # Verificar si gastronomía está en preferencias del usuario
+        categorias_preferidas = user_prefs.get('categorias_preferidas', []) if user_prefs else []
+        incluir_horarios_comida = 'Gastronomía' in categorias_preferidas
+        
+        # Identificar horarios de comida según duración del itinerario SOLO si gastronomía está en preferencias
         horarios_comida = []
-        hora_fin_itinerario = hora_inicio_int + duracion_horas
+        if incluir_horarios_comida:
+            hora_fin_itinerario = hora_inicio_int + duracion_horas
+            
+            # Almuerzo (12:00-15:00)
+            if hora_inicio_int <= 13 and hora_fin_itinerario >= 12:
+                horarios_comida.append(('almuerzo', 13, 90))  # 13:00, 1.5 horas
+            
+            # Cena (19:00-21:00) - solo si el itinerario es suficientemente largo
+            if duracion_horas >= 6 and hora_fin_itinerario >= 19:
+                horarios_comida.append(('cena', 19, 90))  # 19:00, 1.5 horas
+            
+            logger.info(f"Horarios de comida identificados (gastronomía en preferencias): {[h[0] for h in horarios_comida]}")
+        else:
+            logger.info("No se programarán horarios específicos de comida - gastronomía no está en preferencias del usuario")
         
-        # Almuerzo (12:00-15:00)
-        if hora_inicio_int <= 13 and hora_fin_itinerario >= 12:
-            horarios_comida.append(('almuerzo', 13, 90))  # 13:00, 1.5 horas
-        
-        # Cena (19:00-21:00) - solo si el itinerario es suficientemente largo
-        if duracion_horas >= 6 and hora_fin_itinerario >= 19:
-            horarios_comida.append(('cena', 19, 90))  # 19:00, 1.5 horas
-        
-        logger.info(f"Horarios de comida identificados: {[h[0] for h in horarios_comida]}")
-        
-        # Programar gastronomía en horarios de comida
+        # Programar gastronomía en horarios de comida SOLO si está en preferencias
         gastronomia_programada = 0
-        for tipo_comida, hora_comida, duracion in horarios_comida:
-            if gastronomia_programada < len(pois_gastronomia):
-                # Verificar que no conflicte con eventos
-                if not self._hour_conflicts_with_events(hora_comida, duracion, eventos):
-                    poi_gastro = pois_gastronomia[gastronomia_programada]
-                    actividad = self._create_activity_from_item(poi_gastro, hora_comida, duracion, len(actividades_pois) + 1)
-                    actividad['tipo_actividad'] = f'Comida ({tipo_comida})'
-                    actividades_pois.append(actividad)
-                    gastronomia_programada += 1
-                    logger.info(f"Gastronomía programada en {tipo_comida}: {poi_gastro.get('nombre')}")
+        if incluir_horarios_comida:
+            for tipo_comida, hora_comida, duracion in horarios_comida:
+                if gastronomia_programada < len(pois_gastronomia):
+                    # Verificar que no conflicte con eventos
+                    if not self._hour_conflicts_with_events(hora_comida, duracion, eventos):
+                        poi_gastro = pois_gastronomia[gastronomia_programada]
+                        actividad = self._create_activity_from_item(poi_gastro, hora_comida, duracion, len(actividades_pois) + 1)
+                        actividad['tipo_actividad'] = f'Comida ({tipo_comida})'
+                        actividades_pois.append(actividad)
+                        gastronomia_programada += 1
+                        logger.info(f"Gastronomía programada en {tipo_comida}: {poi_gastro.get('nombre')}")
         
         # Programar el resto de POIs en horarios disponibles
         pois_restantes = pois_gastronomia[gastronomia_programada:] + pois_otros
+        hora_fin_itinerario = hora_inicio_int + duracion_horas
         
         for i, poi in enumerate(pois_restantes):
             # Determinar duración según categoría
@@ -1053,26 +1072,28 @@ class RecommendationService:
         
         logger.info(f"Eventos seleccionados: {len(eventos_elegidos)}")
         
-        # PASO 2: GARANTIZAR GASTRONOMÍA SI ES PREFERIDA
+        # PASO 2: GARANTIZAR GASTRONOMÍA SOLO SI ESTÁ EN PREFERENCIAS DEL USUARIO
         pois_gastronomia = [poi for poi in pois_scored if poi.get('categoria') == 'Gastronomía']
         pois_no_gastronomia = [poi for poi in pois_scored if poi.get('categoria') != 'Gastronomía']
-        
+
         gastronomia_incluida = False
         pois_finales = []
-        
-        # Si gastronomía está en categorías preferidas, incluir al menos 1
+
+        # SOLO incluir gastronomía si está en categorías preferidas del usuario
+        categorias_preferidas = user_prefs.get('categorias_preferidas', [])
         if categorias_preferidas and 'Gastronomía' in categorias_preferidas and pois_gastronomia:
             # Incluir al menos 1 gastronomía
             pois_finales.append(pois_gastronomia[0])
             gastronomia_incluida = True
-            logger.info(f"Gastronomía garantizada incluida: {pois_gastronomia[0].get('nombre')}")
+            logger.info(f"Gastronomía garantizada incluida (está en preferencias): {pois_gastronomia[0].get('nombre')}")
             
             # Para itinerarios largos, incluir más gastronomía
             if duracion_horas >= 8 and len(pois_gastronomia) > 1:
                 pois_finales.append(pois_gastronomia[1])
                 logger.info(f"Segunda gastronomía incluida para itinerario largo")
-        
-        # PASO 3: Completar con otros POIs balanceando categorías preferidas
+        else:
+            if not categorias_preferidas or 'Gastronomía' not in categorias_preferidas:
+                logger.info(f"Gastronomía NO incluida - no está en preferencias del usuario: {categorias_preferidas}")        # PASO 3: Completar con otros POIs balanceando categorías preferidas
         pois_restantes_necesarios = items_pois - len(pois_finales)
         
         if categorias_preferidas and len(categorias_preferidas) > 1:
@@ -1274,7 +1295,8 @@ class RecommendationService:
                 user_prefs.get('duracion_horas', user_prefs.get('duracion_preferida', 8)),
                 hora_inicio,
                 lat_origen,
-                lng_origen
+                lng_origen,
+                user_prefs
             )
             
             if not actividades:
