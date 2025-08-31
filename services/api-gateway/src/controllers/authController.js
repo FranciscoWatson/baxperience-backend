@@ -17,9 +17,11 @@ class AuthController {
         idiomaPreferido, 
         telefono, 
         tipoViajero, 
-        genero,
-        preferencias
+        genero
       } = req.body;
+      
+      // Extraer preferencias y permitir que sea modificable
+      let preferencias = req.body.preferencias;
 
       // Validate basic input
       if (!email || !password || !nombre || !apellido || !username) {
@@ -41,6 +43,27 @@ class AuthController {
           error: 'At least one preference category is required'
         });
       }
+      
+      // Validate each preference is a valid number
+      const validPreferencias = preferencias
+        .filter(p => p !== null && p !== undefined && p !== '')
+        .map(p => {
+          const parsed = parseInt(p, 10);
+          return isNaN(parsed) ? null : parsed;
+        })
+        .filter(p => p !== null);
+      
+      if (validPreferencias.length === 0) {
+        return res.status(400).json({
+          error: 'No valid preference categories found. Please provide numeric category IDs.'
+        });
+      }
+      
+      console.log('Controller: Received preferences:', preferencias);
+      console.log('Controller: Valid preferences after parsing:', validPreferencias);
+      
+      // Replace the original array with the validated one
+      preferencias = validPreferencias;
 
       // Hash password
       const saltRounds = 12;

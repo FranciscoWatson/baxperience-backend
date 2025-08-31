@@ -59,17 +59,44 @@ class AuthRepository {
   }
 
   async createUserPreferences(userId, preferencias) {
-    const preferenciasPromises = preferencias.map(categoriaId => 
-      db.query(
+    // Filtrar cualquier valor nulo o indefinido
+    const validPreferencias = preferencias.filter(categoriaId => 
+      categoriaId !== null && categoriaId !== undefined && categoriaId !== ''
+    );
+    
+    if (validPreferencias.length === 0) {
+      return []; // No hay preferencias válidas para insertar
+    }
+    
+    // Log para depuración
+    console.log('Creating user preferences for userId:', userId);
+    console.log('Valid preferencias:', validPreferencias);
+    
+    const preferenciasPromises = validPreferencias.map(categoriaId => {
+      // Convertir explícitamente a entero
+      const catId = parseInt(categoriaId, 10);
+      
+      // Verificar que sea un número válido
+      if (isNaN(catId)) {
+        console.error('Invalid category ID:', categoriaId);
+        return Promise.resolve({ rows: [{ id: null, categoria_id: null, le_gusta: true }] });
+      }
+      
+      console.log('Inserting preference:', catId, 'for user:', userId);
+      
+      return db.query(
         `INSERT INTO preferencias_usuario (usuario_id, categoria_id, le_gusta, fecha_creacion, fecha_actualizacion)
          VALUES ($1, $2, TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
          RETURNING id, categoria_id, le_gusta`,
-        [userId, categoriaId]
-      )
-    );
+        [userId, catId]
+      );
+    });
 
     const preferenciasResults = await Promise.all(preferenciasPromises);
-    return preferenciasResults.map(result => result.rows[0]);
+    // Filtrar los resultados nulos (de preferencias inválidas)
+    return preferenciasResults
+      .filter(result => result.rows && result.rows.length > 0 && result.rows[0].categoria_id !== null)
+      .map(result => result.rows[0]);
   }
 
   async findUserForLogin(email) {
@@ -183,17 +210,41 @@ class AuthRepository {
       const user = userResult.rows[0];
 
       // Insert user preferences
-      const preferenciasPromises = preferencias.map(categoriaId => 
-        client.query(
+      // Filtrar cualquier valor nulo o indefinido
+      const validPreferencias = preferencias.filter(categoriaId => 
+        categoriaId !== null && categoriaId !== undefined && categoriaId !== ''
+      );
+      
+      console.log('Valid preferencias in registerUserWithPreferences:', validPreferencias);
+      
+      if (validPreferencias.length === 0) {
+        console.warn('No valid preferences found for user:', user.id);
+      }
+      
+      const preferenciasPromises = validPreferencias.map(categoriaId => {
+        // Convertir explícitamente a entero
+        const catId = parseInt(categoriaId, 10);
+        
+        // Verificar que sea un número válido
+        if (isNaN(catId)) {
+          console.error('Invalid category ID in registerUserWithPreferences:', categoriaId);
+          return Promise.resolve({ rows: [] });
+        }
+        
+        console.log('Inserting preference in registerUserWithPreferences:', catId, 'for user:', user.id);
+        
+        return client.query(
           `INSERT INTO preferencias_usuario (usuario_id, categoria_id, le_gusta, fecha_creacion, fecha_actualizacion)
            VALUES ($1, $2, TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
            RETURNING id, categoria_id, le_gusta`,
-          [user.id, categoriaId]
-        )
-      );
+          [user.id, catId]
+        );
+      });
 
       const preferenciasResults = await Promise.all(preferenciasPromises);
-      const userPreferencias = preferenciasResults.map(result => result.rows[0]);
+      const userPreferencias = preferenciasResults
+        .filter(result => result.rows && result.rows.length > 0)
+        .map(result => result.rows[0]);
 
       await client.query('COMMIT');
 
