@@ -1,0 +1,212 @@
+{
+  "timestamp": "2025-08-31T16:44:23.565701",
+  "total_pois": 3528,
+  "kmeans_results": {
+    "2": {
+      "n_clusters": 2,
+      "silhouette_score": 0.4309501432726688,
+      "inertia": 4423.756434755419
+    },
+    "3": {
+      "n_clusters": 3,
+      "silhouette_score": 0.48476241426068717,
+      "inertia": 2459.603122477357
+    },
+    "4": {
+      "n_clusters": 4,
+      "silhouette_score": 0.40311938711063217,
+      "inertia": 1917.7366103118281
+    },
+    "5": {
+      "n_clusters": 5,
+      "silhouette_score": 0.4111354791356079,
+      "inertia": 1532.932100831773
+    },
+    "6": {
+      "n_clusters": 6,
+      "silhouette_score": 0.417000303390741,
+      "inertia": 1263.6274151112702
+    },
+    "7": {
+      "n_clusters": 7,
+      "silhouette_score": 0.3904788915663916,
+      "inertia": 1083.9214598837768
+    },
+    "8": {
+      "n_clusters": 8,
+      "silhouette_score": 0.4029859713415638,
+      "inertia": 909.2645910102572
+    },
+    "9": {
+      "n_clusters": 9,
+      "silhouette_score": 0.4037988294134281,
+      "inertia": 813.7728884240166
+    },
+    "10": {
+      "n_clusters": 10,
+      "silhouette_score": 0.40572587618293204,
+      "inertia": 722.663824652052
+    }
+  },
+  "mejor_k": 3,
+  "dbscan_result": {
+    "eps": 0.005,
+    "min_samples": 5,
+    "n_clusters": 13,
+    "n_noise": 3371,
+    "noise_ratio": 0.9554988662131519,
+    "silhouette_score": 0.9972831052572358
+  },
+  "analisis_categorias": {
+    "top_barrios": {
+      "Palermo": 551,
+      "San Nicolas": 540,
+      "Recoleta": 490,
+      "Balvanera": 252,
+      "Monserrat": 228,
+      "Retiro": 149,
+      "Caballito": 136,
+      "Belgrano": 100,
+      "San Telmo": 98,
+      "Flores": 91
+    },
+    "diversidad_categorias": {
+      "Belgrano": 5,
+      "Balvanera": 5,
+      "Constitucion": 5,
+      "Flores": 5,
+      "Caballito": 5,
+      "Monserrat": 5,
+      "Recoleta": 5,
+      "Retiro": 5,
+      "San Nicolas": 5,
+      "Puerto Madero": 5
+    },
+    "matriz_barrio_categoria": {
+      "Entretenimiento": {
+        "Agronomia": 0,
+        "Almagro": 1,
+        "Balvanera": 4,
+        "Barracas": 0,
+        "Belgrano": 3,
+        "Boedo": 1,
+        "Caballito": 1,
+        "Chacarita": 0,
+        "Coghlan": 0,
+        "Colegiales": 0
+      },
+      "Gastronomía": {
+        "Agronomia": 3,
+        "Almagro": 63,
+        "Balvanera": 215,
+        "Barracas": 49,
+        "Belgrano": 71,
+        "Boedo": 14,
+        "Caballito": 125,
+        "Chacarita": 18,
+        "Coghlan": 5,
+        "Colegiales": 41
+      },
+      "Lugares Históricos": {
+        "Agronomia": 0,
+        "Almagro": 0,
+        "Balvanera": 18,
+        "Barracas": 9,
+        "Belgrano": 13,
+        "Boedo": 2,
+        "Caballito": 1,
+        "Chacarita": 24,
+        "Coghlan": 0,
+        "Colegiales": 0
+      },
+      "Monumentos": {
+        "Agronomia": 0,
+        "Almagro": 0,
+        "Balvanera": 4,
+        "Barracas": 2,
+        "Belgrano": 5,
+        "Boedo": 0,
+        "Caballito": 5,
+        "Chacarita": 2,
+        "Coghlan": 0,
+        "Colegiales": 1
+      },
+      "Museos": {
+        "Agronomia": 0,
+        "Almagro": 2,
+        "Balvanera": 11,
+        "Barracas": 4,
+        "Belgrano": 8,
+        "Boedo": 1,
+        "Caballito": 4,
+        "Chacarita": 2,
+        "Coghlan": 0,
+        "Colegiales": 0
+      }
+    }
+  },
+  "hardcoded_values": {
+    "zonas_geograficas": [
+      "Puerto Madero",
+      "Palermo",
+      "San Telmo",
+      "La Boca",
+      "Recoleta"
+    ],
+    "scores_fijos": [
+      0.6,
+      0.5,
+      0.4,
+      0.3,
+      0.25,
+      0.2,
+      0.15,
+      0.1,
+      0.05
+    ],
+    "duraciones_fijas": [
+      90,
+      120,
+      180
+    ],
+    "horarios_fijos": [
+      13,
+      19
+    ],
+    "limites_fijos": [
+      20,
+      40,
+      60,
+      80,
+      200
+    ]
+  },
+  "recomendaciones": {
+    "silhouette_score": {
+      "actual": "Pendiente análisis",
+      "objetivo": "> 0.5 (bueno), > 0.7 (excelente)",
+      "mejoras": [
+        "Normalizar datos geográficos antes del clustering",
+        "Usar PCA para reducir dimensionalidad si hay muchas features",
+        "Probar diferentes métricas de distancia (haversine para coordenadas)",
+        "Aplicar clustering jerárquico para comparar resultados",
+        "Considerar clustering por categorías separadamente"
+      ]
+    },
+    "parametros_dinamicos": {
+      "problema": "Muchos valores están hardcodeados",
+      "solucion": [
+        "Crear tabla de configuración en BD",
+        "Parametrizar horarios de comida por ciudad/cultura",
+        "Hacer scoring configurable por tipo de usuario",
+        "Obtener zonas desde datos geográficos reales"
+      ]
+    },
+    "algoritmos_adicionales": [
+      "Mean Shift clustering (detección automática de clusters)",
+      "Gaussian Mixture Models (clusters probabilísticos)",
+      "Clustering espectral (para formas no convexas)",
+      "HDBSCAN (versión mejorada de DBSCAN)"
+    ]
+  }
+}

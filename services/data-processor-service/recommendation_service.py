@@ -70,14 +70,44 @@ class RecommendationService:
     
     def load_ml_models(self):
         """Cargar modelos ML entrenados desde BD"""
-        logger.info("Cargando modelos ML...")
+        logger.info("Cargando resultados de clustering desde BD...")
         
-        # Por ahora, no cargamos modelos específicos
-        # Los clusters ya están aplicados en lugares_clustering
-        logger.info("Usando clusters ya aplicados en lugares_clustering")
-        
-        # En el futuro, aquí cargaríamos modelos pickle guardados
-        # Por ahora, los resultados de clustering están en clustering_results
+        try:
+            cursor = self.conn.cursor(cursor_factory=RealDictCursor)
+            
+            # Cargar resultados de clustering más recientes
+            cursor.execute("""
+                SELECT algorithm_type, results_json, silhouette_score, n_clusters
+                FROM clustering_results 
+                ORDER BY id DESC 
+                LIMIT 20
+            """)
+            
+            clustering_results = cursor.fetchall()
+            
+            # Organizar resultados por algoritmo
+            for result in clustering_results:
+                algorithm = result['algorithm_type']
+                if algorithm not in self.models:
+                    self.models[algorithm] = {
+                        'results': result['results_json'],
+                        'silhouette_score': float(result['silhouette_score']) if result['silhouette_score'] else 0,
+                        'n_clusters': result['n_clusters'],
+                        'created_at': 'recent'
+                    }
+                    logger.info(f"Cargado clustering {algorithm}: {result['n_clusters']} clusters, silhouette={result['silhouette_score']:.3f}")
+            
+            logger.info(f"Modelos ML cargados: {list(self.models.keys())}")
+            
+        except Exception as e:
+            logger.warning(f"No se pudieron cargar modelos ML: {e}")
+            # Rollback en caso de error SQL
+            if self.conn:
+                try:
+                    self.conn.rollback()
+                except:
+                    pass
+            # Fallback: usar lógica simple sin clustering avanzado
     
     def get_user_preferences(self, user_id: int) -> Dict:
         """
@@ -199,10 +229,97 @@ class RecommendationService:
                 'actividades_evitar': ['Entretenimiento']
             }
     
+    def _find_geographic_cluster_for_zone(self, zona: str) -> Optional[int]:
+        """
+        Encontrar el cluster geográfico DBSCAN que contiene la zona preferida
+        Usa los resultados de clustering guardados en BD
+        """
+        try:
+            if 'dbscan' not in self.models:
+                logger.warning("No hay resultados DBSCAN disponibles")
+                return None
+                
+            dbscan_results = self.models['dbscan']['results']
+            
+            # Buscar en cluster_stats si hay información de barrios
+            if 'cluster_stats' in dbscan_results:
+                for cluster_id, stats in dbscan_results['cluster_stats'].items():
+                    if 'barrios_incluidos' in stats:
+                        barrios = stats['barrios_incluidos']
+                        # Buscar coincidencia parcial con la zona preferida
+                        for barrio in barrios:
+                            if zona.lower() in barrio.lower() or barrio.lower() in zona.lower():
+                                logger.info(f"Zona '{zona}' encontrada en cluster DBSCAN {cluster_id} (barrio: {barrio})")
+                                return int(cluster_id)
+            
+            logger.info(f"No se encontró cluster específico para zona '{zona}', usando filtrado tradicional")
+            return None
+            
+        except Exception as e:
+            logger.warning(f"Error buscando cluster para zona '{zona}': {e}")
+            return None
+    
+    def _apply_clustering_filters(self, base_query: str, params: List, cluster_geografico: Optional[int] = None) -> Tuple[str, List]:
+        """
+        Aplicar filtros de clustering a una query base
+        Usa DBSCAN para filtrado geográfico si está disponible
+        """
+        if cluster_geografico is not None and 'dbscan' in self.models:
+            try:
+                # Obtener POIs del cluster específico usando DBSCAN
+                dbscan_results = self.models['dbscan']['results']
+                
+                if 'poi_clusters' in dbscan_results:
+                    # Filtrar POIs que pertenecen al cluster geográfico
+                    cluster_poi_ids = []
+                    for poi_id, poi_cluster in dbscan_results['poi_clusters'].items():
+                        if poi_cluster == cluster_geografico:
+                            cluster_poi_ids.append(poi_id)
+                    
+                    if cluster_poi_ids:
+                        # Agregar filtro por IDs de POIs del cluster
+                        ids_str = ', '.join(['%s'] * len(cluster_poi_ids))
+                        base_query += f" AND poi_id IN ({ids_str})"
+                        params.extend(cluster_poi_ids)
+                        logger.info(f"Aplicado filtro DBSCAN: {len(cluster_poi_ids)} POIs en cluster {cluster_geografico}")
+                
+            except Exception as e:
+                logger.warning(f"Error aplicando filtro DBSCAN: {e}")
+        
+        return base_query, params
+    
+    def _get_user_cluster_profile(self, user_id: int) -> Optional[int]:
+        """
+        Obtener el cluster de perfil de usuario usando K-means
+        Para segmentación de comportamiento de usuario
+        """
+        try:
+            if 'kmeans' not in self.models:
+                return None
+                
+            # Por ahora, usar lógica simple basada en preferencias
+            # En el futuro, esto usaría un modelo K-means entrenado sobre comportamiento de usuarios
+            user_prefs = self.get_user_preferences(user_id)
+            
+            # Mapeo simple a clusters de usuario (a mejorar con datos reales)
+            if 'Gastronomía' in user_prefs.get('categorias_preferidas', []):
+                return 0  # Cluster foodie
+            elif 'Museos' in user_prefs.get('categorias_preferidas', []):
+                return 1  # Cluster cultural  
+            elif 'Entretenimiento' in user_prefs.get('categorias_preferidas', []):
+                return 2  # Cluster entretenimiento
+            else:
+                return None
+                
+        except Exception as e:
+            logger.warning(f"Error obteniendo cluster de usuario: {e}")
+            return None
+
     def filter_pois_and_events_by_clusters(self, user_prefs: Dict) -> Dict[str, List[Dict]]:
         """
         Filtrar POIs y eventos usando clusters geográficos y temáticos
         CON SAMPLING BALANCEADO POR CATEGORÍA para itinerarios realistas
+        INTEGRADO CON DBSCAN PARA CLUSTERING GEOGRÁFICO INTELIGENTE
         """
         logger.info("Filtrando POIs y eventos por clusters...")
         
@@ -220,6 +337,12 @@ class RecommendationService:
             longitud_origen = user_prefs.get('longitud_origen')
             
             logger.info(f"Filtrando POIs desde punto origen: lat={latitud_origen}, lng={longitud_origen}, zona_pref={zona}")
+            
+            # === USAR CLUSTERING DBSCAN PARA FILTRADO GEOGRÁFICO INTELIGENTE ===
+            cluster_geografico_preferido = None
+            if zona and zona.strip() and 'dbscan' in self.models:
+                cluster_geografico_preferido = self._find_geographic_cluster_for_zone(zona)
+                logger.info(f"Cluster geográfico detectado para zona '{zona}': {cluster_geografico_preferido}")
             
             # === IMPLEMENTAR SAMPLING BALANCEADO POR CATEGORÍA ===
             pois_balanceados = []
@@ -454,9 +577,9 @@ class RecommendationService:
     def calculate_poi_scores(self, pois: List[Dict], user_prefs: Dict) -> List[Dict]:
         """
         Calcular scores personalizados para cada POI
-        MEJORADO: Considera distancia desde punto de origen
+        MEJORADO: Considera distancia desde punto de origen + CLUSTERING INTELIGENTE
         """
-        logger.info("Calculando scores personalizados...")
+        logger.info("Calculando scores personalizados con clustering...")
         
         if not pois:
             return []
@@ -464,6 +587,10 @@ class RecommendationService:
         # Obtener coordenadas de origen para cálculos de proximidad
         lat_origen = user_prefs.get('latitud_origen')
         lng_origen = user_prefs.get('longitud_origen')
+        
+        # Obtener información de clusters para el usuario
+        user_id = user_prefs.get('user_id')
+        user_cluster_profile = self._get_user_cluster_profile(user_id) if user_id else None
         
         scored_pois = []
         
@@ -513,6 +640,20 @@ class RecommendationService:
             if categorias_preferidas and poi.get('categoria') in categorias_preferidas:
                 score += 0.6  # Bonus MUY ALTO para categorías preferidas del usuario
                 logger.debug(f"Bonus categoría preferida aplicado a {poi.get('nombre')}: {poi.get('categoria')}")
+            
+            # 🆕 BONUS POR CLUSTERING JERÁRQUICO DE CATEGORÍAS
+            if 'hierarchical' in self.models and poi.get('categoria'):
+                cluster_bonus = self._calculate_category_cluster_bonus(poi.get('categoria'), user_prefs)
+                if cluster_bonus > 0:
+                    score += cluster_bonus
+                    logger.debug(f"Bonus clustering jerárquico aplicado: +{cluster_bonus:.2f}")
+            
+            # 🆕 BONUS POR CLUSTER DE PERFIL DE USUARIO (K-MEANS)
+            if user_cluster_profile is not None:
+                profile_bonus = self._calculate_user_profile_bonus(poi, user_cluster_profile)
+                if profile_bonus > 0:
+                    score += profile_bonus
+                    logger.debug(f"Bonus perfil de usuario aplicado: +{profile_bonus:.2f}")
             
             # Bonus adicional para actividades gratuitas (sin considerar presupuesto)
             if poi.get('es_gratuito'):
@@ -568,6 +709,75 @@ class RecommendationService:
         
         return scored_pois
     
+    def _calculate_category_cluster_bonus(self, categoria: str, user_prefs: Dict) -> float:
+        """
+        Calcular bonus basado en clustering jerárquico de categorías
+        Usa relaciones entre categorías detectadas por clustering
+        """
+        try:
+            if 'hierarchical' not in self.models:
+                return 0.0
+                
+            hierarchical_results = self.models['hierarchical']['results']
+            
+            # Buscar categorías relacionadas en el clustering jerárquico
+            if 'category_relationships' in hierarchical_results:
+                user_categories = user_prefs.get('categorias_preferidas', [])
+                
+                for user_cat in user_categories:
+                    if user_cat in hierarchical_results['category_relationships']:
+                        related_categories = hierarchical_results['category_relationships'][user_cat]
+                        
+                        if categoria in related_categories:
+                            # Bonus por categoría relacionada detectada por clustering
+                            similarity_score = related_categories[categoria]
+                            return similarity_score * 0.15  # Máximo 0.15 bonus
+            
+            return 0.0
+            
+        except Exception as e:
+            logger.debug(f"Error calculando bonus clustering jerárquico: {e}")
+            return 0.0
+    
+    def _calculate_user_profile_bonus(self, poi: Dict, user_cluster_profile: int) -> float:
+        """
+        Calcular bonus basado en el perfil de cluster del usuario (K-means)
+        Usa características del POI que coinciden con el perfil de usuario
+        """
+        try:
+            bonus = 0.0
+            categoria = poi.get('categoria', '')
+            
+            # Bonuses específicos por cluster de perfil de usuario
+            if user_cluster_profile == 0:  # Cluster foodie
+                if categoria == 'Gastronomía':
+                    bonus += 0.25
+                    # Bonus adicional por características gastronómicas
+                    if poi.get('tipo_cocina'):
+                        bonus += 0.05
+                    if poi.get('tipo_ambiente') == 'Elegante':
+                        bonus += 0.05
+                        
+            elif user_cluster_profile == 1:  # Cluster cultural
+                if categoria in ['Museos', 'Monumentos', 'Lugares Históricos']:
+                    bonus += 0.25
+                    # Bonus adicional por características culturales
+                    if poi.get('tiene_web'):  # Lugares culturales suelen tener buena información
+                        bonus += 0.05
+                        
+            elif user_cluster_profile == 2:  # Cluster entretenimiento
+                if categoria == 'Entretenimiento':
+                    bonus += 0.25
+                    # Bonus por características de entretenimiento
+                    if not poi.get('es_gratuito'):  # Entretenimiento de pago suele ser de mejor calidad
+                        bonus += 0.05
+            
+            return bonus
+            
+        except Exception as e:
+            logger.debug(f"Error calculando bonus perfil de usuario: {e}")
+            return 0.0
+
     def calculate_event_scores(self, eventos: List[Dict], user_prefs: Dict) -> List[Dict]:
         """
         Calcular scores personalizados para eventos
@@ -743,8 +953,8 @@ class RecommendationService:
     
     def _optimize_geographic_route(self, pois: List[Dict], max_pois: int, lat_origen: float = None, lng_origen: float = None) -> List[Dict]:
         """
-        Optimizar POIs por proximidad geográfica usando algoritmo greedy
-        MEJORADO: Considera punto de origen para empezar la ruta
+        Optimizar POIs por proximidad geográfica usando algoritmo greedy + CLUSTERING DBSCAN
+        MEJORADO: Usa clusters DBSCAN para optimización de rutas inteligente
         """
         if not pois or max_pois <= 0:
             return []
@@ -766,13 +976,113 @@ class RecommendationService:
             # Si no hay coordenadas, usar los primeros POIs
             return pois[:max_pois]
         
+        # 🆕 OPTIMIZACIÓN CON CLUSTERING DBSCAN
+        if 'dbscan' in self.models:
+            try:
+                clustered_pois = self._group_pois_by_dbscan_clusters(pois_con_coords)
+                if clustered_pois:
+                    logger.info(f"Usando clustering DBSCAN para optimizar ruta: {len(clustered_pois)} grupos")
+                    return self._optimize_route_within_clusters(clustered_pois, max_pois, lat_origen, lng_origen)
+            except Exception as e:
+                logger.warning(f"Error usando clustering DBSCAN, fallback a algoritmo greedy: {e}")
+        
+        # Fallback: Algoritmo greedy tradicional
+        return self._optimize_route_greedy_traditional(pois_con_coords, max_pois, lat_origen, lng_origen)
+    
+    def _group_pois_by_dbscan_clusters(self, pois: List[Dict]) -> Optional[Dict]:
+        """
+        Agrupar POIs por clusters DBSCAN para optimización de ruta
+        """
+        try:
+            dbscan_results = self.models['dbscan']['results']
+            
+            if 'poi_clusters' not in dbscan_results:
+                return None
+            
+            # Agrupar POIs por cluster DBSCAN
+            clusters = {}
+            noise_pois = []
+            
+            for poi in pois:
+                poi_id = poi.get('poi_id')
+                if poi_id and str(poi_id) in dbscan_results['poi_clusters']:
+                    cluster_id = dbscan_results['poi_clusters'][str(poi_id)]
+                    
+                    if cluster_id == -1:  # Ruido en DBSCAN
+                        noise_pois.append(poi)
+                    else:
+                        if cluster_id not in clusters:
+                            clusters[cluster_id] = []
+                        clusters[cluster_id].append(poi)
+                else:
+                    noise_pois.append(poi)
+            
+            # Ordenar clusters por número de POIs (priorizar clusters densos)
+            sorted_clusters = sorted(clusters.items(), key=lambda x: len(x[1]), reverse=True)
+            
+            return {
+                'clusters': dict(sorted_clusters),
+                'noise': noise_pois,
+                'total_clusters': len(clusters)
+            }
+            
+        except Exception as e:
+            logger.warning(f"Error agrupando POIs por DBSCAN: {e}")
+            return None
+    
+    def _optimize_route_within_clusters(self, clustered_pois: Dict, max_pois: int, lat_origen: float = None, lng_origen: float = None) -> List[Dict]:
+        """
+        Optimizar ruta usando clusters DBSCAN: priorizar POIs del mismo cluster
+        """
+        ruta_optimizada = []
+        pois_por_cluster = clustered_pois['clusters']
+        noise_pois = clustered_pois['noise']
+        
+        # Estrategia: Seleccionar POIs principalmente de 1-2 clusters principales
+        clusters_a_usar = list(pois_por_cluster.keys())[:2]  # Máximo 2 clusters principales
+        
+        for cluster_id in clusters_a_usar:
+            cluster_pois = pois_por_cluster[cluster_id]
+            
+            # Optimizar POIs dentro del cluster usando algoritmo greedy
+            cluster_optimizado = self._optimize_route_greedy_traditional(
+                cluster_pois, 
+                min(max_pois - len(ruta_optimizada), len(cluster_pois)), 
+                lat_origen, 
+                lng_origen
+            )
+            
+            ruta_optimizada.extend(cluster_optimizado)
+            logger.info(f"Cluster {cluster_id}: {len(cluster_optimizado)} POIs agregados")
+            
+            if len(ruta_optimizada) >= max_pois:
+                break
+        
+        # Completar con POIs de ruido si es necesario
+        if len(ruta_optimizada) < max_pois and noise_pois:
+            remaining_slots = max_pois - len(ruta_optimizada)
+            noise_optimizado = self._optimize_route_greedy_traditional(
+                noise_pois, remaining_slots, lat_origen, lng_origen
+            )
+            ruta_optimizada.extend(noise_optimizado)
+            logger.info(f"Ruido: {len(noise_optimizado)} POIs agregados")
+        
+        return ruta_optimizada[:max_pois]
+    
+    def _optimize_route_greedy_traditional(self, pois: List[Dict], max_pois: int, lat_origen: float = None, lng_origen: float = None) -> List[Dict]:
+        """
+        Algoritmo greedy tradicional para optimización de rutas
+        """
+        if not pois or max_pois <= 0:
+            return []
+        
         # Algoritmo greedy para ruta más corta desde punto de origen
         ruta_optimizada = []
-        pois_disponibles = pois_con_coords[:]
+        pois_disponibles = pois[:]
         
         # Si tenemos punto de origen, empezar desde el POI más cercano al origen
         if lat_origen is not None and lng_origen is not None:
-            logger.info(f"Iniciando ruta desde origen: lat={lat_origen}, lng={lng_origen}")
+            logger.debug(f"Iniciando ruta desde origen: lat={lat_origen}, lng={lng_origen}")
             
             # Encontrar el POI más cercano al punto de origen
             mejor_poi = None
@@ -796,7 +1106,6 @@ class RecommendationService:
                 actual = mejor_poi
                 pois_disponibles.remove(actual)
                 ruta_optimizada.append(actual)
-                logger.info(f"Primer POI desde origen: {actual.get('nombre')} (distancia: {menor_distancia:.2f}km)")
             else:
                 # Fallback: empezar con el POI con mejor score
                 pois_disponibles.sort(key=lambda x: x.get('score_personalizado', 0), reverse=True)
