@@ -9,6 +9,9 @@ router.use(authMiddleware);
 // Generate personalized itinerary
 router.post('/generate', itineraryController.generatePersonalizedItinerary);
 
+// Confirm and save itinerary
+router.post('/confirm', itineraryController.confirmItinerary);
+
 // Itinerary CRUD operations
 router.post('/', itineraryController.createItinerary);
 router.get('/', itineraryController.getUserItineraries);

@@ -147,6 +147,58 @@ class ItineraryRepository {
 
     return result.rows;
   }
+
+  async createItineraryWithLocation(userId, itineraryData) {
+    const { 
+      nombre, 
+      descripcion, 
+      fechaInicio, 
+      fechaFin, 
+      modoTransportePreferido,
+      ubicacionLatitud,
+      ubicacionLongitud,
+      ubicacionDireccion,
+      tiempoEstimadoHoras
+    } = itineraryData;
+    
+    const result = await db.query(
+      `INSERT INTO itinerarios (
+        usuario_id, nombre, descripcion, fecha_inicio, fecha_fin, 
+        modo_transporte_preferido, estado, ubicacion_latitud, ubicacion_longitud, 
+        ubicacion_direccion, tiempo_estimado_horas, fecha_creacion, fecha_actualizacion
+      ) 
+       VALUES ($1, $2, $3, $4, $5, $6, 'planificado', $7, $8, $9, $10, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP) 
+       RETURNING id, nombre, descripcion, fecha_inicio, fecha_fin, modo_transporte_preferido, estado, fecha_creacion`,
+      [
+        userId, 
+        nombre, 
+        descripcion || null, 
+        fechaInicio, 
+        fechaFin, 
+        modoTransportePreferido || null,
+        ubicacionLatitud || null,
+        ubicacionLongitud || null,
+        ubicacionDireccion || null,
+        tiempoEstimadoHoras || null
+      ]
+    );
+
+    return result.rows[0];
+  }
+
+  async findPOIByName(nombre) {
+    try {
+      const result = await db.query(
+        `SELECT id FROM pois WHERE LOWER(nombre) LIKE LOWER($1) LIMIT 1`,
+        [`%${nombre}%`]
+      );
+      
+      return result.rows[0]?.id || null;
+    } catch (error) {
+      console.error('Error finding POI by name:', error);
+      return null;
+    }
+  }
 }
 
 module.exports = new ItineraryRepository();

@@ -1,5 +1,6 @@
 const itineraryRepository = require('../repositories/itineraryRepository');
 const kafkaService = require('../services/kafkaService');
+const db = require('../config/database');
 
 class ItineraryController {
   async createItinerary(req, res) {
@@ -335,23 +336,23 @@ class ItineraryController {
   async generatePersonalizedItinerary(req, res) {
     try {
       const userId = req.user.userId;
-      const { 
+      const {
+        name,
         fecha_visita, 
         hora_inicio, 
         duracion_horas, 
-        categorias_preferidas, 
-        zona_preferida, 
-        presupuesto 
+        longitud_origen,
+        latitud_origen,
+        zona_preferida,
+        ubicacion_direccion  // Nueva propiedad para la dirección literal
       } = req.body;
 
       // Validaciones básicas
-      if (!fecha_visita || !hora_inicio || !duracion_horas) {
+      if (!name || !fecha_visita || !hora_inicio || !duracion_horas || longitud_origen === undefined || latitud_origen === undefined) {
         return res.status(400).json({
-          error: 'Required fields: fecha_visita, hora_inicio, duracion_horas'
+          error: 'Required fields: name, fecha_visita, hora_inicio, duracion_horas, longitud_origen, latitud_origen'
         });
-      }
-
-      // Validar formato de fecha
+      }      // Validar formato de fecha
       const fechaRegex = /^\d{4}-\d{2}-\d{2}$/;
       if (!fechaRegex.test(fecha_visita)) {
         return res.status(400).json({
@@ -374,14 +375,30 @@ class ItineraryController {
         });
       }
 
-      // Construir los datos de la solicitud
+      // Validar coordenadas
+      if (typeof longitud_origen !== 'number' || typeof latitud_origen !== 'number') {
+        return res.status(400).json({
+          error: 'longitud_origen and latitud_origen must be valid numbers'
+        });
+      }
+
+      // Validar que las coordenadas estén en el rango de Buenos Aires (aproximado)
+      if (latitud_origen < -35.0 || latitud_origen > -34.0 || longitud_origen < -59.0 || longitud_origen > -58.0) {
+        return res.status(400).json({
+          error: 'Coordinates must be within Buenos Aires area'
+        });
+      }
+
+      // Construir los datos de la solicitud (NO enviamos la dirección literal al data processor)
       const requestData = {
+        name,
         fecha_visita,
         hora_inicio,
         duracion_horas,
-        categorias_preferidas: categorias_preferidas || null,
-        zona_preferida: zona_preferida || null,
-        presupuesto: presupuesto || null
+        longitud_origen,
+        latitud_origen,
+        zona_preferida: zona_preferida || null
+        // ubicacion_direccion NO se incluye - solo se usa para mostrar al usuario y guardar después
       };
 
       try {
@@ -392,11 +409,22 @@ class ItineraryController {
         if (response.status === 'success') {
           const data = response.data || {};
           
+          // Devolver el itinerario generado para que el frontend lo muestre al usuario
+          // NO lo guardamos en la base de datos todavía - eso se hace en confirmItinerary
           res.status(200).json({
             message: 'Itinerary generated successfully',
             request_id: requestId,
-            itinerario: {
-              id: data.itinerario_id,
+            itinerario_propuesto: {
+              nombre: name,
+              fecha_visita: fecha_visita,
+              hora_inicio: hora_inicio,
+              duracion_horas: duracion_horas,
+              ubicacion_origen: {
+                latitud: latitud_origen,
+                longitud: longitud_origen,
+                direccion: ubicacion_direccion || null  // Incluir la dirección literal para mostrar al usuario
+              },
+              zona_preferida: zona_preferida,
               actividades: data.actividades || [],
               preferencias_usadas: data.preferencias_usadas || {},
               metadata: {
@@ -443,6 +471,135 @@ class ItineraryController {
       console.error('Generate personalized itinerary error:', error);
       res.status(500).json({
         error: 'Internal server error while generating personalized itinerary'
+      });
+    }
+  }
+
+  async confirmItinerary(req, res) {
+    try {
+      const userId = req.user.userId;
+      const {
+        nombre,
+        descripcion,
+        fecha_visita,
+        hora_inicio,
+        duracion_horas,
+        ubicacion_origen,
+        zona_preferida,
+        actividades,
+        modo_transporte_preferido
+      } = req.body;
+
+      // Validaciones básicas
+      if (!nombre || !fecha_visita || !actividades || !Array.isArray(actividades)) {
+        return res.status(400).json({
+          error: 'Required fields: nombre, fecha_visita, actividades (array)'
+        });
+      }
+
+      if (actividades.length === 0) {
+        return res.status(400).json({
+          error: 'At least one activity is required'
+        });
+      }
+
+      try {
+        // Comenzar transacción
+        await db.query('BEGIN');
+
+        // 1. Crear el itinerario principal
+        const itineraryData = {
+          nombre,
+          descripcion: descripcion || `Itinerario generado para ${fecha_visita}`,
+          fechaInicio: fecha_visita,
+          fechaFin: fecha_visita, // Para itinerarios de un día
+          modoTransportePreferido: modo_transporte_preferido || 'mixed',
+          ubicacionLatitud: ubicacion_origen?.latitud || null,
+          ubicacionLongitud: ubicacion_origen?.longitud || null,
+          ubicacionDireccion: ubicacion_origen?.direccion || zona_preferida || null, // Usar la dirección literal si está disponible
+          tiempoEstimadoHoras: duracion_horas || null
+        };
+
+        const itinerary = await itineraryRepository.createItineraryWithLocation(userId, itineraryData);
+        console.log('✅ Itinerary created with ID:', itinerary.id);
+
+        // 2. Agregar todas las actividades
+        const actividadesCreadas = [];
+        for (let i = 0; i < actividades.length; i++) {
+          const actividad = actividades[i];
+          
+          // Determinar tipo de actividad y validar datos
+          let tipoActividad, poiId, eventoId;
+          if (actividad.poi_id) {
+            tipoActividad = 'poi';
+            poiId = actividad.poi_id;
+            eventoId = null;
+          } else if (actividad.evento_id) {
+            tipoActividad = 'evento';
+            poiId = null;
+            eventoId = actividad.evento_id;
+          } else {
+            // Si no hay poi_id o evento_id, asumir que es un POI y buscar por nombre
+            tipoActividad = 'poi';
+            poiId = await itineraryRepository.findPOIByName(actividad.nombre);
+            eventoId = null;
+          }
+
+          const activityData = {
+            tipoActividad,
+            poiId,
+            eventoId,
+            diaVisita: 1, // Todos los itinerarios de un día
+            ordenEnDia: i + 1,
+            horaInicioPlanificada: actividad.hora_inicio,
+            horaFinPlanificada: actividad.hora_fin,
+            tiempoEstimadoMinutos: actividad.tiempo_estimado_minutos,
+            notasPlanificacion: actividad.descripcion || null
+          };
+
+          const actividadCreada = await itineraryRepository.addActivityToItinerary(itinerary.id, activityData);
+          actividadesCreadas.push({
+            ...actividadCreada,
+            actividad_original: actividad
+          });
+        }
+
+        // Confirmar transacción
+        await db.query('COMMIT');
+
+        res.status(201).json({
+          message: 'Itinerary confirmed and saved successfully',
+          itinerario: {
+            id: itinerary.id,
+            nombre: itinerary.nombre,
+            descripcion: itinerary.descripcion,
+            fechaInicio: itinerary.fecha_inicio,
+            fechaFin: itinerary.fecha_fin,
+            estado: itinerary.estado,
+            fechaCreacion: itinerary.fecha_creacion,
+            actividades: actividadesCreadas.map(act => ({
+              id: act.id,
+              nombre: act.actividad_original.nombre,
+              tipo: act.actividad_original.tipo,
+              horaInicio: act.actividad_original.hora_inicio,
+              horaFin: act.actividad_original.hora_fin,
+              diaVisita: act.dia_visita,
+              ordenEnDia: act.orden_en_dia
+            }))
+          }
+        });
+
+      } catch (dbError) {
+        // Rollback en caso de error
+        await db.query('ROLLBACK');
+        throw dbError;
+      }
+
+    } catch (error) {
+      console.error('Confirm itinerary error:', error);
+      res.status(500).json({
+        error: 'Internal server error while confirming itinerary',
+        details: error.message
       });
     }
   }
