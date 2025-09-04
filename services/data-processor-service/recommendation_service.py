@@ -109,10 +109,11 @@ class RecommendationService:
                     pass
             # Fallback: usar lógica simple sin clustering avanzado
     
-    def get_user_preferences(self, user_id: int) -> Dict:
+    def get_user_preferences(self, user_id: int, request_data: Dict = None) -> Dict:
         """
         Obtener preferencias del usuario desde BD Operacional
         Lee las preferencias reales de la base de datos
+        MEJORADO: Considera coordenadas de origen para determinar zona automáticamente
         """
         # Asegurar conexión a BD Operacional
         if not hasattr(self, 'operational_conn') or not self.operational_conn:
@@ -175,11 +176,31 @@ class RecommendationService:
             if not categorias_preferidas:
                 categorias_preferidas = ['Museos', 'Gastronomía']
             
-            # Mapear tipo_viajero a zona preferida y tipo de compañía
-            zona_preferida = 'Palermo'  # Default
+            # NUEVO: Determinar zona preferida basándose en coordenadas de origen si están disponibles
+            zona_preferida = None
             tipo_compania = 'solo'      # Default
             
-            if user_info[1]:  # tipo_viajero
+            # 1. Prioridad: Si se especifica zona_preferida en request_data, usarla
+            if request_data and request_data.get('zona_preferida'):
+                zona_preferida = request_data['zona_preferida']
+                logger.info(f"Zona especificada en request: {zona_preferida}")
+            
+            # 2. Si no hay zona en request pero SÍ hay coordenadas, calcular zona automáticamente
+            elif request_data and request_data.get('latitud_origen') is not None and request_data.get('longitud_origen') is not None:
+                try:
+                    lat_origen = float(request_data['latitud_origen'])
+                    lng_origen = float(request_data['longitud_origen'])
+                    zona_calculada = self._determinar_zona_por_coordenadas(lat_origen, lng_origen)
+                    if zona_calculada:
+                        zona_preferida = zona_calculada
+                        logger.info(f"Zona calculada por coordenadas ({lat_origen}, {lng_origen}): {zona_preferida}")
+                    else:
+                        logger.warning(f"No se pudo determinar zona para coordenadas ({lat_origen}, {lng_origen})")
+                except (ValueError, TypeError) as e:
+                    logger.warning(f"Error procesando coordenadas de origen: {e}")
+            
+            # 3. Fallback: Mapear zona según tipo de viajero si está disponible
+            if not zona_preferida and user_info[1]:  # tipo_viajero
                 tipo_lower = user_info[1].lower()
                 
                 # Mapear zona según tipo de viajero
@@ -195,6 +216,13 @@ class RecommendationService:
                     zona_preferida = 'Puerto Madero'
                 else:
                     zona_preferida = 'Palermo'  # Default para urbano, etc.
+                    
+                logger.info(f"Zona asignada por tipo_viajero '{user_info[1]}': {zona_preferida}")
+            
+            # 4. Último fallback: Palermo
+            if not zona_preferida:
+                zona_preferida = 'Palermo'
+                logger.info("Zona fallback: Palermo")
                 
                 # Mapear tipo de compañía
                 if 'pareja' in tipo_lower:
@@ -228,6 +256,100 @@ class RecommendationService:
                 'duracion_preferida': 8,
                 'actividades_evitar': ['Entretenimiento']
             }
+    
+    def _determinar_zona_por_coordenadas(self, lat_origen: float, lng_origen: float) -> Optional[str]:
+        """
+        Determinar zona/barrio basándose en coordenadas de origen
+        Usa POIs cercanos para inferir la zona más probable
+        """
+        try:
+            if not self.conn:
+                logger.warning("No hay conexión a BD para determinar zona por coordenadas")
+                return None
+                
+            cursor = self.conn.cursor(cursor_factory=RealDictCursor)
+            
+            # Buscar POIs cercanos (dentro de 2km) que tengan barrio asignado
+            query = """
+            SELECT 
+                barrio, 
+                COUNT(*) as pois_count,
+                AVG(
+                    6371 * 2 * ASIN(SQRT(
+                        POWER(SIN((latitud - %s) * PI() / 180 / 2), 2) +
+                        COS(%s * PI() / 180) * COS(latitud * PI() / 180) *
+                        POWER(SIN((longitud - %s) * PI() / 180 / 2), 2)
+                    ))
+                ) as distancia_promedio_km
+            FROM lugares_clustering
+            WHERE latitud IS NOT NULL 
+            AND longitud IS NOT NULL
+            AND barrio IS NOT NULL
+            AND barrio != ''
+            AND (
+                6371 * 2 * ASIN(SQRT(
+                    POWER(SIN((latitud - %s) * PI() / 180 / 2), 2) +
+                    COS(%s * PI() / 180) * COS(latitud * PI() / 180) *
+                    POWER(SIN((longitud - %s) * PI() / 180 / 2), 2)
+                )) < 2.0
+            )
+            GROUP BY barrio
+            ORDER BY pois_count DESC, distancia_promedio_km ASC
+            LIMIT 5
+            """
+            
+            cursor.execute(query, (lat_origen, lat_origen, lng_origen, lat_origen, lat_origen, lng_origen))
+            results = cursor.fetchall()
+            
+            if results:
+                barrio_mas_probable = results[0]['barrio']
+                pois_count = results[0]['pois_count']
+                distancia = results[0]['distancia_promedio_km']
+                
+                logger.info(f"Zona determinada por coordenadas: {barrio_mas_probable} ({pois_count} POIs, {distancia:.2f}km promedio)")
+                
+                # Normalizar nombres de barrios comunes
+                barrio_normalizado = self._normalizar_nombre_barrio(barrio_mas_probable)
+                
+                cursor.close()
+                return barrio_normalizado
+            else:
+                logger.info(f"No se encontraron POIs cercanos a las coordenadas ({lat_origen}, {lng_origen})")
+                cursor.close()
+                return None
+                
+        except Exception as e:
+            logger.error(f"Error determinando zona por coordenadas: {e}")
+            return None
+    
+    def _normalizar_nombre_barrio(self, barrio: str) -> str:
+        """
+        Normalizar nombres de barrios para consistencia
+        """
+        if not barrio:
+            return barrio
+            
+        barrio_lower = barrio.lower().strip()
+        
+        # Mapeo de nombres comunes/alternativos
+        mapeo_barrios = {
+            'puerto madero': 'Puerto Madero',
+            'san telmo': 'San Telmo',
+            'la boca': 'La Boca',
+            'palermo': 'Palermo',
+            'recoleta': 'Recoleta',
+            'belgrano': 'Belgrano',
+            'villa crespo': 'Villa Crespo',
+            'barracas': 'Barracas',
+            'constitución': 'Constitución',
+            'microcentro': 'Microcentro',
+            'centro': 'Microcentro',
+            'retiro': 'Retiro',
+            'once': 'Once',
+            'abasto': 'Abasto'
+        }
+        
+        return mapeo_barrios.get(barrio_lower, barrio.title())
     
     def _find_geographic_cluster_for_zone(self, zona: str) -> Optional[int]:
         """
@@ -332,7 +454,7 @@ class RecommendationService:
                 
             # Por ahora, usar lógica simple basada en preferencias
             # En el futuro, esto usaría un modelo K-means entrenado sobre comportamiento de usuarios
-            user_prefs = self.get_user_preferences(user_id)
+            user_prefs = self.get_user_preferences(user_id, None)  # Sin request_data aquí
             
             # Mapeo simple a clusters de usuario (a mejorar con datos reales)
             if 'Gastronomía' in user_prefs.get('categorias_preferidas', []):
@@ -1762,16 +1884,17 @@ class RecommendationService:
         logger.info(f"Generando itinerario para usuario {user_id}")
         
         try:
-            # 1. Obtener preferencias del usuario
-            user_prefs = self.get_user_preferences(user_id)
+            # 1. Obtener preferencias del usuario CON request_data para coordenadas
+            user_prefs = self.get_user_preferences(user_id, request_data)
             
             # Combinar con request específico (EXCEPTO categorias_preferidas que siempre vienen de BD)
             for key, value in request_data.items():
                 if value is not None and key != 'categorias_preferidas':  # NUNCA override categorías
                     user_prefs[key] = value
             
-            # Log para verificar que categorías vienen de BD
+            # Log para verificar que categorías vienen de BD y zona se determina correctamente
             logger.info(f"Categorías preferidas (siempre de BD): {user_prefs.get('categorias_preferidas', [])}")
+            logger.info(f"Zona determinada: {user_prefs.get('zona_preferida')} (origen: lat={request_data.get('latitud_origen')}, lng={request_data.get('longitud_origen')})")
             logger.info(f"Preferencias finales utilizadas: {user_prefs}")
             
             # 2. Filtrar POIs y eventos usando clusters

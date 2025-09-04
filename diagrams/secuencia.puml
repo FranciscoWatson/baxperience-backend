@@ -1,0 +1,23 @@
+@startuml secuencia_itinerario_clustering
+autonumber
+actor "App Móvil" as APP
+participant "API Gateway" as GW
+participant "Kafka" as KAFKA
+participant "Data Processor" as DP
+database "operational_db" as ODB
+
+' Generación de itinerario (no persistido)
+APP -> GW : POST /itinerarios/generar
+GW -> KAFKA : Publica "Generate Itinerary"
+KAFKA -> DP : Consume "Generate Itinerary"
+DP -> ODB : Lee datos necesarios (POIs/Eventos)
+DP -> DP : Lógica de clustering y armado\nde itinerario (ranking/constraints)
+DP -> KAFKA : Publica "Itinerary generated"
+KAFKA -> GW : Consume "Itinerary generated"
+GW --> APP : 200 Itinerario generado
+
+' Confirmación de itinerario
+APP -> GW : POST /itinerarios/confirmar
+GW -> ODB : INSERT itinerario confirmado
+GW --> APP : 200 Confirmación OK
+@enduml
