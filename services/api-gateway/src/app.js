@@ -10,6 +10,7 @@ const itineraryRoutes = require('./routes/itinerary');
 const poisRoutes = require('./routes/pois');
 const valoracionesRoutes = require('./routes/valoraciones');
 const mapsRoutes = require('./routes/maps');
+const bikesRoutes = require('./routes/bikes');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -51,6 +52,7 @@ app.use('/api/itinerary', itineraryRoutes);
 app.use('/api/pois', poisRoutes);
 app.use('/api/valoraciones', valoracionesRoutes);
 app.use('/api/maps', mapsRoutes);
+app.use('/api/bikes', bikesRoutes);
 
 // 404 handler
 app.use('*', (req, res) => {
