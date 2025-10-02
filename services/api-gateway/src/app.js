@@ -9,6 +9,7 @@ const authRoutes = require('./routes/auth');
 const itineraryRoutes = require('./routes/itinerary');
 const poisRoutes = require('./routes/pois');
 const valoracionesRoutes = require('./routes/valoraciones');
+const mapsRoutes = require('./routes/maps');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -49,6 +50,7 @@ app.use('/api/auth', authRoutes);
 app.use('/api/itinerary', itineraryRoutes);
 app.use('/api/pois', poisRoutes);
 app.use('/api/valoraciones', valoracionesRoutes);
+app.use('/api/maps', mapsRoutes);
 
 // 404 handler
 app.use('*', (req, res) => {
