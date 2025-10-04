@@ -129,7 +129,7 @@ class ItineraryController {
     try {
       const userId = req.user.userId;
       const { id } = req.params;
-      const { nombre, descripcion, fechaInicio, fechaFin, modoTransportePreferido } = req.body;
+      const { nombre, descripcion, fechaInicio, fechaFin, modoTransportePreferido, estado } = req.body;
 
       // Check if itinerary exists and belongs to user
       const existingItinerary = await itineraryRepository.checkItineraryOwnership(id, userId);
@@ -146,7 +146,8 @@ class ItineraryController {
         descripcion,
         fechaInicio,
         fechaFin,
-        modoTransportePreferido
+        modoTransportePreferido,
+        estado
       };
 
       const itinerary = await itineraryRepository.updateItinerary(id, userId, updateData);

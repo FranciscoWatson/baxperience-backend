@@ -48,7 +48,7 @@ class ItineraryRepository {
   }
 
   async updateItinerary(itineraryId, userId, updateData) {
-    const { nombre, descripcion, fechaInicio, fechaFin, modoTransportePreferido } = updateData;
+    const { nombre, descripcion, fechaInicio, fechaFin, modoTransportePreferido, estado } = updateData;
     
     const result = await db.query(
       `UPDATE itinerarios 
@@ -57,8 +57,9 @@ class ItineraryRepository {
            fecha_inicio = COALESCE($3, fecha_inicio),
            fecha_fin = COALESCE($4, fecha_fin),
            modo_transporte_preferido = COALESCE($5, modo_transporte_preferido),
+           estado = COALESCE($6, estado),
            fecha_actualizacion = CURRENT_TIMESTAMP
-       WHERE id = $6 AND usuario_id = $7 
+       WHERE id = $7 AND usuario_id = $8 
        RETURNING id, nombre, descripcion, fecha_inicio, fecha_fin, modo_transporte_preferido, estado, fecha_creacion, fecha_actualizacion`,
       [
         nombre || null,
@@ -66,6 +67,7 @@ class ItineraryRepository {
         fechaInicio || null,
         fechaFin || null,
         modoTransportePreferido || null,
+        estado || null,
         itineraryId,
         userId
       ]
