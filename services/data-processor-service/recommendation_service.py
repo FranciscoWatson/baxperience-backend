@@ -487,6 +487,14 @@ class RecommendationService:
             actividades_evitar = user_prefs.get('actividades_evitar', [])
             fecha_visita = user_prefs.get('fecha_visita', datetime.now().date().isoformat())
             
+            # NEW: Obtener IDs de POIs y eventos a excluir (para evitar repeticiones multi-día)
+            excluded_poi_ids = user_prefs.get('excluded_poi_ids', [])
+            excluded_event_ids = user_prefs.get('excluded_event_ids', [])
+            
+            # ALWAYS log exclusions (even if empty) to debug multi-day issues
+            logger.info(f"🚫 EXCLUSION CHECK - POIs to exclude: {len(excluded_poi_ids)} - {excluded_poi_ids}")
+            logger.info(f"🚫 EXCLUSION CHECK - Events to exclude: {len(excluded_event_ids)} - {excluded_event_ids}")
+            
             # Obtener coordenadas de origen para cálculos de distancia (futuro uso)
             latitud_origen = user_prefs.get('latitud_origen')
             longitud_origen = user_prefs.get('longitud_origen')
@@ -534,6 +542,11 @@ class RecommendationService:
                     if actividades_evitar:
                         evitar_sql = "', '".join(actividades_evitar)
                         pois_query += f" AND categoria NOT IN ('{evitar_sql}')"
+                    
+                    # NEW: Excluir POIs ya usados en días anteriores
+                    if excluded_poi_ids:
+                        pois_query += " AND poi_id NOT IN %s"
+                        params.append(tuple(excluded_poi_ids))
                     
                     # LÓGICA BALANCEADA: Más POIs para categorías no-gastronómicas
                     if categoria == 'Gastronomía':
@@ -590,6 +603,12 @@ class RecommendationService:
                     evitar_sql = "', '".join(actividades_evitar)
                     pois_query += f" AND categoria NOT IN ('{evitar_sql}')"
                 
+                # NEW: Excluir POIs ya usados en días anteriores (TAMBIÉN EN ESTE BLOQUE)
+                params_single = []
+                if excluded_poi_ids:
+                    pois_query += " AND poi_id NOT IN %s"
+                    params_single.append(tuple(excluded_poi_ids))
+                
                 pois_query += """
                 ORDER BY 
                     CASE WHEN barrio IS NOT NULL THEN 1 ELSE 0 END DESC,
@@ -598,7 +617,10 @@ class RecommendationService:
                 LIMIT 200
                 """
                 
-                cursor.execute(pois_query)
+                if params_single:
+                    cursor.execute(pois_query, params_single)
+                else:
+                    cursor.execute(pois_query)
                 pois_result = cursor.fetchall()
                 pois = [dict(poi) for poi in pois_result]
             
@@ -669,6 +691,11 @@ class RecommendationService:
             if zona and zona.strip():
                 eventos_query += " AND (barrio ILIKE %s OR barrio IS NULL)"
                 params.append(f"%{zona}%")
+            
+            # NEW: Excluir eventos ya usados en días anteriores
+            if excluded_event_ids:
+                eventos_query += " AND evento_id NOT IN %s"
+                params.append(tuple(excluded_event_ids))
             
             eventos_query += """
             ORDER BY 
@@ -1616,14 +1643,42 @@ class RecommendationService:
         # Combinar eventos y POIs
         todas_actividades = eventos + actividades_pois
         
+        # DEDUPLICATION: Remove duplicate POIs/events within same day
+        seen_poi_ids = set()
+        seen_event_ids = set()
+        actividades_unicas = []
+        
+        for actividad in todas_actividades:
+            # Check if it's an event
+            if actividad.get('item_type') == 'evento':
+                evento_id = actividad.get('evento_id')
+                if evento_id and evento_id not in seen_event_ids:
+                    seen_event_ids.add(evento_id)
+                    actividades_unicas.append(actividad)
+                elif not evento_id:
+                    # No ID, keep it (shouldn't happen)
+                    actividades_unicas.append(actividad)
+            else:
+                # It's a POI
+                poi_id = actividad.get('poi_id')
+                if poi_id and poi_id not in seen_poi_ids:
+                    seen_poi_ids.add(poi_id)
+                    actividades_unicas.append(actividad)
+                elif not poi_id:
+                    # No ID, keep it (shouldn't happen)
+                    actividades_unicas.append(actividad)
+        
+        if len(todas_actividades) != len(actividades_unicas):
+            logger.warning(f"🔄 Removed {len(todas_actividades) - len(actividades_unicas)} duplicate activities within same day")
+        
         # Ordenar por horario
-        todas_actividades.sort(key=lambda x: x['horario_inicio'])
+        actividades_unicas.sort(key=lambda x: x['horario_inicio'])
         
         # Reordenar números de orden
-        for i, actividad in enumerate(todas_actividades):
+        for i, actividad in enumerate(actividades_unicas):
             actividad['orden_visita'] = i + 1
         
-        return todas_actividades
+        return actividades_unicas
     
     def _find_available_hour(self, hora_inicio: int, hora_fin: int, duracion_min: int, eventos: List[Dict], actividades_programadas: List[Dict]) -> int:
         """Encontrar horario disponible evitando conflictos"""
@@ -1891,6 +1946,12 @@ class RecommendationService:
             for key, value in request_data.items():
                 if value is not None and key != 'categorias_preferidas':  # NUNCA override categorías
                     user_prefs[key] = value
+            
+            # DEBUG: Log exclusions from request_data
+            logger.info(f"🔍 DEBUG - request_data excluded_poi_ids: {request_data.get('excluded_poi_ids', 'NOT FOUND')}")
+            logger.info(f"🔍 DEBUG - request_data excluded_event_ids: {request_data.get('excluded_event_ids', 'NOT FOUND')}")
+            logger.info(f"🔍 DEBUG - user_prefs excluded_poi_ids: {user_prefs.get('excluded_poi_ids', 'NOT FOUND')}")
+            logger.info(f"🔍 DEBUG - user_prefs excluded_event_ids: {user_prefs.get('excluded_event_ids', 'NOT FOUND')}")
             
             # Log para verificar que categorías vienen de BD y zona se determina correctamente
             logger.info(f"Categorías preferidas (siempre de BD): {user_prefs.get('categorias_preferidas', [])}")

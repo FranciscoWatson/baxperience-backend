@@ -338,7 +338,8 @@ class ItineraryController {
       const userId = req.user.userId;
       const {
         name,
-        fecha_visita, 
+        fecha_visita,
+        fecha_fin,  // NEW: Optional end date for multi-day trips
         hora_inicio, 
         duracion_horas, 
         longitud_origen,
@@ -352,11 +353,41 @@ class ItineraryController {
         return res.status(400).json({
           error: 'Required fields: name, fecha_visita, hora_inicio, duracion_horas, longitud_origen, latitud_origen'
         });
-      }      // Validar formato de fecha
+      }      
+      
+      // Validar formato de fecha
       const fechaRegex = /^\d{4}-\d{2}-\d{2}$/;
       if (!fechaRegex.test(fecha_visita)) {
         return res.status(400).json({
           error: 'fecha_visita must be in format YYYY-MM-DD'
+        });
+      }
+
+      // Validar fecha_fin si se proporciona
+      const finalEndDate = fecha_fin || fecha_visita;
+      if (!fechaRegex.test(finalEndDate)) {
+        return res.status(400).json({
+          error: 'fecha_fin must be in format YYYY-MM-DD'
+        });
+      }
+
+      // Calcular número de días
+      const startDate = new Date(fecha_visita);
+      const endDate = new Date(finalEndDate);
+      const daysDiff = Math.ceil((endDate - startDate) / (1000 * 60 * 60 * 24)) + 1;
+
+      if (daysDiff < 1 || daysDiff > 7) {
+        return res.status(400).json({
+          error: 'Trip duration must be between 1 and 7 days'
+        });
+      }
+
+      console.log(`🗓️  Generating ${daysDiff}-day itinerary from ${fecha_visita} to ${finalEndDate}`);
+      
+      // Validar que fecha_fin no sea anterior a fecha_visita
+      if (endDate < startDate) {
+        return res.status(400).json({
+          error: 'fecha_fin cannot be before fecha_visita'
         });
       }
 
@@ -389,67 +420,129 @@ class ItineraryController {
         });
       }
 
-      // Construir los datos de la solicitud (NO enviamos la dirección literal al data processor)
-      const requestData = {
-        name,
-        fecha_visita,
-        hora_inicio,
-        duracion_horas,
-        longitud_origen,
-        latitud_origen,
-        zona_preferida: zona_preferida || null
-        // ubicacion_direccion NO se incluye - solo se usa para mostrar al usuario y guardar después
-      };
+      // Array para almacenar todas las actividades de todos los días
+      const allDaysActivities = [];
+      const usedPoiIds = new Set();
+      const usedEventIds = new Set();
+      let lastRequestId = null;
 
       try {
-        // Enviar solicitud a través de Kafka y esperar respuesta
-        const { requestId, response } = await kafkaService.sendItineraryRequestAndWait(userId, requestData, 45000);
+        // Generar itinerario para cada día
+        for (let dayIndex = 0; dayIndex < daysDiff; dayIndex++) {
+          const currentDate = new Date(startDate);
+          currentDate.setDate(currentDate.getDate() + dayIndex);
+          const currentDateStr = currentDate.toISOString().split('T')[0];
 
-        // Procesar respuesta
-        if (response.status === 'success') {
-          const data = response.data || {};
+          console.log(`📅 Processing Day ${dayIndex + 1}/${daysDiff} - ${currentDateStr}`);
+
+          // Construir los datos de la solicitud para este día específico
+          const excludedPoiArray = Array.from(usedPoiIds);
+          const excludedEventArray = Array.from(usedEventIds);
           
-          // Devolver el itinerario generado para que el frontend lo muestre al usuario
-          // NO lo guardamos en la base de datos todavía - eso se hace en confirmItinerary
-          res.status(200).json({
-            message: 'Itinerary generated successfully',
-            request_id: requestId,
-            itinerario_propuesto: {
-              nombre: name,
-              fecha_visita: fecha_visita,
-              hora_inicio: hora_inicio,
-              duracion_horas: duracion_horas,
-              ubicacion_origen: {
-                latitud: latitud_origen,
-                longitud: longitud_origen,
-                direccion: ubicacion_direccion || null  // Incluir la dirección literal para mostrar al usuario
-              },
-              zona_preferida: zona_preferida,
-              actividades: data.actividades || [],
-              preferencias_usadas: data.preferencias_usadas || {},
+          console.log(`🚫 Day ${dayIndex + 1} - Excluding ${excludedPoiArray.length} POIs: [${excludedPoiArray.join(', ')}]`);
+          console.log(`🚫 Day ${dayIndex + 1} - Excluding ${excludedEventArray.length} events: [${excludedEventArray.join(', ')}]`);
+          
+          const requestData = {
+            name: `${name} - Day ${dayIndex + 1}`,
+            fecha_visita: currentDateStr,
+            hora_inicio,
+            duracion_horas,
+            longitud_origen,
+            latitud_origen,
+            zona_preferida: zona_preferida || null,
+            // Enviar IDs de actividades ya usadas para evitar repetición
+            excluded_poi_ids: excludedPoiArray,
+            excluded_event_ids: excludedEventArray
+          };
+
+          // Enviar solicitud a través de Kafka y esperar respuesta
+          const { requestId, response } = await kafkaService.sendItineraryRequestAndWait(userId, requestData, 45000);
+          lastRequestId = requestId;
+
+          // Procesar respuesta del día
+          if (response.status === 'success') {
+            const data = response.data || {};
+            const actividades = data.actividades || [];
+            
+            // Agregar actividades del día al array
+            allDaysActivities.push({
+              dia: dayIndex + 1,
+              fecha: currentDateStr,
+              actividades: actividades,
               metadata: {
                 processing_time_seconds: data.processing_metadata?.processing_time_seconds,
                 timestamp: response.timestamp
               }
+            });
+
+            // Registrar POIs y eventos usados para evitar repetición en días siguientes
+            actividades.forEach(actividad => {
+              // Check item_type to distinguish between POI and event
+              if (actividad.item_type === 'evento' && actividad.evento_id) {
+                usedEventIds.add(actividad.evento_id);
+                console.log(`  📌 Registering event ID: ${actividad.evento_id} - ${actividad.nombre}`);
+              } else if (actividad.poi_id) {
+                // Everything else is a POI (item_type='poi' or undefined)
+                usedPoiIds.add(actividad.poi_id);
+                console.log(`  📌 Registering POI ID: ${actividad.poi_id} - ${actividad.nombre}`);
+              }
+            });
+
+            console.log(`✅ Day ${dayIndex + 1} processed: ${actividades.length} activities added`);
+            console.log(`📊 Total used: ${usedPoiIds.size} POIs, ${usedEventIds.size} events`);
+
+          } else if (response.status === 'error') {
+            const error = response.error || {};
+            
+            // Si falla un día, devolver error indicando qué día falló
+            return res.status(400).json({
+              error: `Error generating itinerary for day ${dayIndex + 1}`,
+              message: error.message || 'Unknown error occurred',
+              suggestions: error.suggestions || [],
+              request_id: requestId,
+              failed_day: dayIndex + 1
+            });
+
+          } else {
+            return res.status(500).json({
+              error: `Unexpected response format from itinerary service for day ${dayIndex + 1}`,
+              request_id: requestId,
+              failed_day: dayIndex + 1
+            });
+          }
+        } // end for loop
+
+        // Todos los días procesados exitosamente
+        // Flatten activities for single-day trips for backward compatibility
+        const actividades = daysDiff === 1 ? allDaysActivities[0].actividades : [];
+        
+        res.status(200).json({
+          message: 'Itinerary generated successfully',
+          request_id: lastRequestId,
+          total_days: daysDiff,
+          itinerario_propuesto: {
+            nombre: name,
+            fecha_inicio: fecha_visita,
+            fecha_fin: finalEndDate,
+            hora_inicio: hora_inicio,
+            duracion_horas: duracion_horas,
+            ubicacion_origen: {
+              latitud: latitud_origen,
+              longitud: longitud_origen,
+              direccion: ubicacion_direccion || null
+            },
+            zona_preferida: zona_preferida,
+            // Para compatibilidad con itinerarios de 1 día
+            actividades: actividades,
+            // Nuevo: actividades organizadas por día
+            dias: allDaysActivities,
+            metadata: {
+              total_activities: allDaysActivities.reduce((sum, day) => sum + day.actividades.length, 0),
+              unique_pois: usedPoiIds.size,
+              unique_events: usedEventIds.size
             }
-          });
-
-        } else if (response.status === 'error') {
-          const error = response.error || {};
-          
-          res.status(400).json({
-            error: 'Error generating itinerary',
-            message: error.message || 'Unknown error occurred',
-            suggestions: error.suggestions || [],
-            request_id: requestId
-          });
-
-        } else {
-          res.status(500).json({
-            error: 'Unexpected response format from itinerary service',
-            request_id: requestId
-          });
-        }
+          }
+        });
 
       } catch (kafkaError) {
         console.error('Kafka error in generatePersonalizedItinerary:', kafkaError);
