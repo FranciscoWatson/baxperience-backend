@@ -51,29 +51,28 @@ class ItineraryController {
   async getUserItineraries(req, res) {
     try {
       const userId = req.user.userId;
-      const { pagina = 1, limite = 10 } = req.query;
+      const { pagina = 1, limite = 20, con_actividades = 'true' } = req.query;
 
       const offset = (pagina - 1) * limite;
+      
+      let itinerarios, total;
 
-      const itinerarios = await itineraryRepository.getUserItineraries(userId, limite, offset);
-      const total = await itineraryRepository.getUserItinerariesCount(userId);
+      // If con_actividades is true, get full itineraries with activities
+      if (con_actividades === 'true') {
+        itinerarios = await itineraryRepository.getUserItinerariesWithActivities(userId, limite, offset);
+        total = await itineraryRepository.getUserItinerariesCount(userId);
+        
+        console.log(`📋 Retrieved ${itinerarios.length} itineraries with activities for user ${userId}`);
+      } else {
+        // Otherwise, just get basic info
+        itinerarios = await itineraryRepository.getUserItineraries(userId, limite, offset);
+        total = await itineraryRepository.getUserItinerariesCount(userId);
+      }
 
       const totalPaginas = Math.ceil(total / limite);
 
-      const formattedItinerarios = itinerarios.map(itinerary => ({
-        id: itinerary.id,
-        nombre: itinerary.nombre,
-        descripcion: itinerary.descripcion,
-        fechaInicio: itinerary.fecha_inicio,
-        fechaFin: itinerary.fecha_fin,
-        modoTransportePreferido: itinerary.modo_transporte_preferido,
-        estado: itinerary.estado,
-        fechaCreacion: itinerary.fecha_creacion,
-        fechaActualizacion: itinerary.fecha_actualizacion
-      }));
-
       res.status(200).json({
-        itinerarios: formattedItinerarios,
+        itinerarios: itinerarios,
         paginacion: {
           pagina: parseInt(pagina),
           limite: parseInt(limite),
@@ -85,7 +84,8 @@ class ItineraryController {
     } catch (error) {
       console.error('Get user itineraries error:', error);
       res.status(500).json({
-        error: 'Internal server error while fetching itineraries'
+        error: 'Internal server error while fetching itineraries',
+        details: error.message
       });
     }
   }
@@ -575,6 +575,7 @@ class ItineraryController {
         nombre,
         descripcion,
         fecha_visita,
+        fecha_fin, // NEW: For multi-day itineraries
         hora_inicio,
         duracion_horas,
         ubicacion_origen,
@@ -600,12 +601,20 @@ class ItineraryController {
         // Comenzar transacción
         await db.query('BEGIN');
 
+        // Determine end date (use fecha_fin if provided, otherwise same as fecha_visita)
+        const finalEndDate = fecha_fin || fecha_visita;
+        const totalDays = Math.ceil((new Date(finalEndDate) - new Date(fecha_visita)) / (1000 * 60 * 60 * 24)) + 1;
+        
+        console.log(`📅 Saving ${totalDays}-day itinerary from ${fecha_visita} to ${finalEndDate}`);
+
         // 1. Crear el itinerario principal
         const itineraryData = {
           nombre,
-          descripcion: descripcion || `Itinerario generado para ${fecha_visita}`,
+          descripcion: descripcion || (totalDays > 1 
+            ? `${totalDays}-day itinerary starting ${fecha_visita}` 
+            : `Itinerario generado para ${fecha_visita}`),
           fechaInicio: fecha_visita,
-          fechaFin: fecha_visita, // Para itinerarios de un día
+          fechaFin: finalEndDate, // Use calculated end date
           modoTransportePreferido: modo_transporte_preferido || 'mixed',
           ubicacionLatitud: ubicacion_origen?.latitud || null,
           ubicacionLongitud: ubicacion_origen?.longitud || null,
@@ -614,7 +623,7 @@ class ItineraryController {
         };
 
         const itinerary = await itineraryRepository.createItineraryWithLocation(userId, itineraryData);
-        console.log('✅ Itinerary created with ID:', itinerary.id);
+        console.log(`✅ Itinerary created with ID: ${itinerary.id} (${totalDays} days)`);
 
         // 2. Agregar todas las actividades
         const actividadesCreadas = [];
@@ -642,13 +651,15 @@ class ItineraryController {
             tipoActividad,
             poiId,
             eventoId,
-            diaVisita: 1, // Todos los itinerarios de un día
-            ordenEnDia: i + 1,
-            horaInicioPlanificada: actividad.hora_inicio,
-            horaFinPlanificada: actividad.hora_fin,
+            diaVisita: actividad.dia_visita || 1, // Use dia_visita from activity, default to 1
+            ordenEnDia: actividad.orden_en_dia || (i + 1), // Use orden_en_dia from activity
+            horaInicioPlanificada: actividad.hora_inicio_planificada || actividad.hora_inicio,
+            horaFinPlanificada: actividad.hora_fin_planificada || actividad.hora_fin,
             tiempoEstimadoMinutos: actividad.tiempo_estimado_minutos,
             notasPlanificacion: actividad.descripcion || null
           };
+
+          console.log(`  📌 Adding activity: ${actividad.nombre} (Day ${activityData.diaVisita}, Order ${activityData.ordenEnDia})`);
 
           const actividadCreada = await itineraryRepository.addActivityToItinerary(itinerary.id, activityData);
           actividadesCreadas.push({
