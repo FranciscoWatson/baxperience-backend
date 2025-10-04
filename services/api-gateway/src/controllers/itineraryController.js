@@ -129,7 +129,17 @@ class ItineraryController {
     try {
       const userId = req.user.userId;
       const { id } = req.params;
-      const { nombre, descripcion, fechaInicio, fechaFin, modoTransportePreferido, estado } = req.body;
+      const { 
+        nombre, 
+        descripcion, 
+        fechaInicio, 
+        fechaFin, 
+        modoTransportePreferido, 
+        estado,
+        valoracionItinerario,
+        comentariosItinerario,
+        recomendaria
+      } = req.body;
 
       // Check if itinerary exists and belongs to user
       const existingItinerary = await itineraryRepository.checkItineraryOwnership(id, userId);
@@ -147,7 +157,10 @@ class ItineraryController {
         fechaInicio,
         fechaFin,
         modoTransportePreferido,
-        estado
+        estado,
+        valoracionItinerario,
+        comentariosItinerario,
+        recomendaria
       };
 
       const itinerary = await itineraryRepository.updateItinerary(id, userId, updateData);
@@ -162,6 +175,9 @@ class ItineraryController {
           fechaFin: itinerary.fecha_fin,
           modoTransportePreferido: itinerary.modo_transporte_preferido,
           estado: itinerary.estado,
+          valoracionItinerario: itinerary.valoracion_itinerario,
+          comentariosItinerario: itinerary.comentarios_itinerario,
+          recomendaria: itinerary.recomendaria,
           fechaCreacion: itinerary.fecha_creacion,
           fechaActualizacion: itinerary.fecha_actualizacion
         }

@@ -48,7 +48,17 @@ class ItineraryRepository {
   }
 
   async updateItinerary(itineraryId, userId, updateData) {
-    const { nombre, descripcion, fechaInicio, fechaFin, modoTransportePreferido, estado } = updateData;
+    const { 
+      nombre, 
+      descripcion, 
+      fechaInicio, 
+      fechaFin, 
+      modoTransportePreferido, 
+      estado,
+      valoracionItinerario,
+      comentariosItinerario,
+      recomendaria
+    } = updateData;
     
     const result = await db.query(
       `UPDATE itinerarios 
@@ -58,9 +68,13 @@ class ItineraryRepository {
            fecha_fin = COALESCE($4, fecha_fin),
            modo_transporte_preferido = COALESCE($5, modo_transporte_preferido),
            estado = COALESCE($6, estado),
+           valoracion_itinerario = COALESCE($7, valoracion_itinerario),
+           comentarios_itinerario = COALESCE($8, comentarios_itinerario),
+           recomendaria = COALESCE($9, recomendaria),
            fecha_actualizacion = CURRENT_TIMESTAMP
-       WHERE id = $7 AND usuario_id = $8 
-       RETURNING id, nombre, descripcion, fecha_inicio, fecha_fin, modo_transporte_preferido, estado, fecha_creacion, fecha_actualizacion`,
+       WHERE id = $10 AND usuario_id = $11 
+       RETURNING id, nombre, descripcion, fecha_inicio, fecha_fin, modo_transporte_preferido, estado, 
+                 valoracion_itinerario, comentarios_itinerario, recomendaria, fecha_creacion, fecha_actualizacion`,
       [
         nombre || null,
         descripcion || null,
@@ -68,6 +82,9 @@ class ItineraryRepository {
         fechaFin || null,
         modoTransportePreferido || null,
         estado || null,
+        valoracionItinerario !== undefined ? valoracionItinerario : null,
+        comentariosItinerario || null,
+        recomendaria !== undefined ? recomendaria : null,
         itineraryId,
         userId
       ]
