@@ -260,6 +260,27 @@ class AuthRepository {
       client.release();
     }
   }
+
+  /**
+   * Update user password
+   */
+  async updatePassword(userId, hashedPassword) {
+    const query = `
+      UPDATE usuarios
+      SET password_hash = $1,
+          fecha_actualizacion = CURRENT_TIMESTAMP
+      WHERE id = $2
+      RETURNING id, email
+    `;
+    
+    try {
+      const result = await db.query(query, [hashedPassword, userId]);
+      return result.rows[0];
+    } catch (error) {
+      console.error('Error updating password:', error);
+      throw error;
+    }
+  }
 }
 
 module.exports = new AuthRepository();

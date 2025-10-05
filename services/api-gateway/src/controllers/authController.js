@@ -1,8 +1,104 @@
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const authRepository = require('../repositories/authRepository');
+const verificationCodeRepository = require('../repositories/verificationCodeRepository');
+const emailService = require('../services/emailService');
 
 class AuthController {
+  /**
+   * Step 1: Request registration code (send email)
+   */
+  async requestRegistrationCode(req, res) {
+    try {
+      const { email, nombre } = req.body;
+
+      if (!email) {
+        return res.status(400).json({
+          error: 'Email is required'
+        });
+      }
+
+      // Check if user already exists
+      const existingUser = await authRepository.findUserForLogin(email);
+      if (existingUser) {
+        return res.status(409).json({
+          error: 'User already exists with this email'
+        });
+      }
+
+      // Check rate limiting - no more than 1 code per minute
+      const recentCode = await verificationCodeRepository.getRecentCode(email, 'registration');
+      if (recentCode) {
+        const timeSinceLastCode = Date.now() - new Date(recentCode.created_at).getTime();
+        const oneMinute = 60 * 1000;
+        if (timeSinceLastCode < oneMinute) {
+          return res.status(429).json({
+            error: 'Please wait before requesting a new code',
+            retryAfter: Math.ceil((oneMinute - timeSinceLastCode) / 1000)
+          });
+        }
+      }
+
+      // Invalidate previous codes
+      await verificationCodeRepository.invalidatePreviousCodes(email, 'registration');
+
+      // Create new verification code
+      const ipAddress = req.ip || req.connection.remoteAddress;
+      const verification = await verificationCodeRepository.createCode(email, 'registration', ipAddress);
+
+      // Send email
+      await emailService.sendRegistrationCode(email, verification.code, nombre || 'there');
+
+      res.status(200).json({
+        message: 'Verification code sent to your email',
+        expiresIn: process.env.VERIFICATION_CODE_EXPIRY_MINUTES || 15
+      });
+
+    } catch (error) {
+      console.error('Request registration code error:', error);
+      res.status(500).json({
+        error: 'Failed to send verification code'
+      });
+    }
+  }
+
+  /**
+   * Step 2: Verify registration code
+   */
+  async verifyRegistrationCode(req, res) {
+    try {
+      const { email, code } = req.body;
+
+      if (!email || !code) {
+        return res.status(400).json({
+          error: 'Email and code are required'
+        });
+      }
+
+      const verification = await verificationCodeRepository.verifyCode(email, code, 'registration');
+
+      if (!verification.valid) {
+        return res.status(400).json({
+          error: verification.error
+        });
+      }
+
+      res.status(200).json({
+        message: 'Code verified successfully',
+        verified: true
+      });
+
+    } catch (error) {
+      console.error('Verify registration code error:', error);
+      res.status(500).json({
+        error: 'Failed to verify code'
+      });
+    }
+  }
+
+  /**
+   * Step 3: Complete registration (after code verification)
+   */
   async register(req, res) {
     try {
       const { 
@@ -283,6 +379,185 @@ class AuthController {
         res.status(500).json({
         error: 'Internal server error during profile setup'
         });
+    }
+  }
+
+  /**
+   * Forgot Password - Step 1: Request password reset code
+   */
+  async requestPasswordReset(req, res) {
+    try {
+      const { email } = req.body;
+
+      if (!email) {
+        return res.status(400).json({
+          error: 'Email is required'
+        });
+      }
+
+      // Check if user exists
+      const user = await authRepository.findUserForLogin(email);
+      
+      // For security, don't reveal if user exists or not
+      // Always return success message
+      
+      if (user) {
+        // Check rate limiting
+        const recentCode = await verificationCodeRepository.getRecentCode(email, 'password_reset');
+        if (recentCode) {
+          const timeSinceLastCode = Date.now() - new Date(recentCode.created_at).getTime();
+          const oneMinute = 60 * 1000;
+          if (timeSinceLastCode < oneMinute) {
+            return res.status(429).json({
+              error: 'Please wait before requesting a new code',
+              retryAfter: Math.ceil((oneMinute - timeSinceLastCode) / 1000)
+            });
+          }
+        }
+
+        // Invalidate previous codes
+        await verificationCodeRepository.invalidatePreviousCodes(email, 'password_reset');
+
+        // Create new verification code
+        const ipAddress = req.ip || req.connection.remoteAddress;
+        const verification = await verificationCodeRepository.createCode(email, 'password_reset', ipAddress);
+
+        // Send email
+        await emailService.sendPasswordResetCode(
+          email, 
+          verification.code, 
+          user.nombre || 'there'
+        );
+      }
+
+      // Always return success to prevent email enumeration
+      res.status(200).json({
+        message: 'If your email is registered, you will receive a password reset code',
+        expiresIn: process.env.VERIFICATION_CODE_EXPIRY_MINUTES || 15
+      });
+
+    } catch (error) {
+      console.error('Request password reset error:', error);
+      res.status(500).json({
+        error: 'Failed to process password reset request'
+      });
+    }
+  }
+
+  /**
+   * Forgot Password - Step 2: Verify reset code
+   */
+  async verifyPasswordResetCode(req, res) {
+    try {
+      const { email, code } = req.body;
+
+      if (!email || !code) {
+        return res.status(400).json({
+          error: 'Email and code are required'
+        });
+      }
+
+      // Verify user exists
+      const user = await authRepository.findUserForLogin(email);
+      if (!user) {
+        return res.status(400).json({
+          error: 'Invalid code'
+        });
+      }
+
+      const verification = await verificationCodeRepository.verifyCode(email, code, 'password_reset');
+
+      if (!verification.valid) {
+        return res.status(400).json({
+          error: verification.error
+        });
+      }
+
+      // Generate a temporary token for password reset
+      const resetToken = jwt.sign(
+        { 
+          email,
+          purpose: 'password_reset',
+          codeId: verification.data.id
+        },
+        process.env.JWT_SECRET,
+        { expiresIn: '15m' } // Short-lived token
+      );
+
+      res.status(200).json({
+        message: 'Code verified successfully',
+        verified: true,
+        resetToken // Use this token to reset password
+      });
+
+    } catch (error) {
+      console.error('Verify password reset code error:', error);
+      res.status(500).json({
+        error: 'Failed to verify code'
+      });
+    }
+  }
+
+  /**
+   * Forgot Password - Step 3: Reset password
+   */
+  async resetPassword(req, res) {
+    try {
+      const { resetToken, newPassword } = req.body;
+
+      if (!resetToken || !newPassword) {
+        return res.status(400).json({
+          error: 'Reset token and new password are required'
+        });
+      }
+
+      // Validate password strength
+      if (newPassword.length < 6) {
+        return res.status(400).json({
+          error: 'Password must be at least 6 characters long'
+        });
+      }
+
+      // Verify reset token
+      let decoded;
+      try {
+        decoded = jwt.verify(resetToken, process.env.JWT_SECRET);
+      } catch (error) {
+        return res.status(400).json({
+          error: 'Invalid or expired reset token'
+        });
+      }
+
+      if (decoded.purpose !== 'password_reset') {
+        return res.status(400).json({
+          error: 'Invalid reset token'
+        });
+      }
+
+      // Find user
+      const user = await authRepository.findUserForLogin(decoded.email);
+      if (!user) {
+        return res.status(404).json({
+          error: 'User not found'
+        });
+      }
+
+      // Hash new password
+      const saltRounds = 12;
+      const hashedPassword = await bcrypt.hash(newPassword, saltRounds);
+
+      // Update password
+      await authRepository.updatePassword(user.id, hashedPassword);
+
+      res.status(200).json({
+        message: 'Password reset successfully'
+      });
+
+    } catch (error) {
+      console.error('Reset password error:', error);
+      res.status(500).json({
+        error: 'Failed to reset password'
+      });
     }
   }
 }

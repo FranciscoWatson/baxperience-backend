@@ -12,6 +12,7 @@ const valoracionesRoutes = require('./routes/valoraciones');
 const mapsRoutes = require('./routes/maps');
 const bikesRoutes = require('./routes/bikes');
 const statsRoutes = require('./routes/stats');
+const emailService = require('./services/emailService');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -74,9 +75,12 @@ app.use((err, req, res, next) => {
   });
 });
 
-app.listen(PORT, () => {
+app.listen(PORT, async () => {
   console.log(`API Gateway running on port ${PORT}`);
   console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
+  
+  // Verify email service
+  await emailService.initialize();
 });
 
 module.exports = app;
