@@ -3,6 +3,7 @@ const jwt = require('jsonwebtoken');
 const authRepository = require('../repositories/authRepository');
 const verificationCodeRepository = require('../repositories/verificationCodeRepository');
 const emailService = require('../services/emailService');
+const cloudinaryService = require('../services/cloudinaryService');
 
 class AuthController {
   /**
@@ -557,6 +558,251 @@ class AuthController {
       console.error('Reset password error:', error);
       res.status(500).json({
         error: 'Failed to reset password'
+      });
+    }
+  }
+
+  /**
+   * Get user profile with complete information
+   */
+  async getProfileInfo(req, res) {
+    try {
+      const userId = req.user.userId;
+
+      const profile = await authRepository.getUserProfile(userId);
+
+      if (!profile) {
+        return res.status(404).json({
+          error: 'User profile not found'
+        });
+      }
+
+      // Remove sensitive data
+      const profileData = {
+        id: profile.id,
+        username: profile.username,
+        email: profile.email,
+        nombre: profile.nombre,
+        apellido: profile.apellido,
+        fecha_nacimiento: profile.fecha_nacimiento,
+        genero: profile.genero,
+        telefono: profile.telefono,
+        pais_origen: profile.pais_origen,
+        ciudad_origen: profile.ciudad_origen,
+        idioma_preferido: profile.idioma_preferido,
+        tipo_viajero: profile.tipo_viajero,
+        duracion_viaje_promedio: profile.duracion_viaje_promedio,
+        profile_image_url: profile.profile_image_url,
+        fecha_registro: profile.fecha_registro,
+        fecha_actualizacion: profile.fecha_actualizacion
+      };
+
+      res.status(200).json(profileData);
+
+    } catch (error) {
+      console.error('Get profile info error:', error);
+      res.status(500).json({
+        error: 'Failed to get profile information'
+      });
+    }
+  }
+
+  /**
+   * Update user profile information
+   */
+  async updateProfileInfo(req, res) {
+    try {
+      const userId = req.user.userId;
+      const {
+        nombre,
+        apellido,
+        fecha_nacimiento,
+        genero,
+        telefono,
+        pais_origen,
+        ciudad_origen,
+        idioma_preferido,
+        tipo_viajero,
+        duracion_viaje_promedio
+      } = req.body;
+
+      // Validate at least one field is being updated
+      if (!nombre && !apellido && !fecha_nacimiento && !genero && !telefono && 
+          !pais_origen && !ciudad_origen && !idioma_preferido && !tipo_viajero && 
+          !duracion_viaje_promedio) {
+        return res.status(400).json({
+          error: 'At least one field must be provided for update'
+        });
+      }
+
+      // Validate fecha_nacimiento if provided
+      if (fecha_nacimiento) {
+        const birthDate = new Date(fecha_nacimiento);
+        const today = new Date();
+        const age = today.getFullYear() - birthDate.getFullYear();
+        
+        if (age < 13) {
+          return res.status(400).json({
+            error: 'User must be at least 13 years old'
+          });
+        }
+      }
+
+      const updatedProfile = await authRepository.updateUserInfo(userId, {
+        nombre,
+        apellido,
+        fecha_nacimiento,
+        genero,
+        telefono,
+        pais_origen,
+        ciudad_origen,
+        idioma_preferido,
+        tipo_viajero,
+        duracion_viaje_promedio
+      });
+
+      if (!updatedProfile) {
+        return res.status(404).json({
+          error: 'User not found'
+        });
+      }
+
+      res.status(200).json({
+        message: 'Profile updated successfully',
+        profile: {
+          id: updatedProfile.id,
+          username: updatedProfile.username,
+          email: updatedProfile.email,
+          nombre: updatedProfile.nombre,
+          apellido: updatedProfile.apellido,
+          fecha_nacimiento: updatedProfile.fecha_nacimiento,
+          genero: updatedProfile.genero,
+          telefono: updatedProfile.telefono,
+          pais_origen: updatedProfile.pais_origen,
+          ciudad_origen: updatedProfile.ciudad_origen,
+          idioma_preferido: updatedProfile.idioma_preferido,
+          tipo_viajero: updatedProfile.tipo_viajero,
+          duracion_viaje_promedio: updatedProfile.duracion_viaje_promedio,
+          profile_image_url: updatedProfile.profile_image_url,
+          fecha_actualizacion: updatedProfile.fecha_actualizacion
+        }
+      });
+
+    } catch (error) {
+      console.error('Update profile info error:', error);
+      res.status(500).json({
+        error: 'Failed to update profile information'
+      });
+    }
+  }
+
+  /**
+   * Upload/Update profile image
+   */
+  async uploadProfileImage(req, res) {
+    try {
+      const userId = req.user.userId;
+
+      if (!req.file) {
+        return res.status(400).json({
+          error: 'No image file provided'
+        });
+      }
+
+      // Validate image
+      try {
+        cloudinaryService.validateImage(req.file);
+      } catch (validationError) {
+        return res.status(400).json({
+          error: validationError.message
+        });
+      }
+
+      // Get current profile to check for existing image
+      const currentProfile = await authRepository.getUserProfile(userId);
+      
+      // Delete old image from Cloudinary if exists
+      if (currentProfile && currentProfile.profile_image_url) {
+        await cloudinaryService.deleteProfileImage(currentProfile.profile_image_url);
+      }
+
+      // Upload new image to Cloudinary
+      const imageUrl = await cloudinaryService.uploadProfileImage(req.file.buffer, userId);
+
+      // Update database with new image URL
+      const updatedProfile = await authRepository.updateProfileImage(userId, imageUrl);
+
+      if (!updatedProfile) {
+        return res.status(404).json({
+          error: 'User not found'
+        });
+      }
+
+      res.status(200).json({
+        message: 'Profile image updated successfully',
+        profile_image_url: updatedProfile.profile_image_url,
+        profile: {
+          id: updatedProfile.id,
+          username: updatedProfile.username,
+          email: updatedProfile.email,
+          nombre: updatedProfile.nombre,
+          apellido: updatedProfile.apellido,
+          profile_image_url: updatedProfile.profile_image_url
+        }
+      });
+
+    } catch (error) {
+      console.error('Upload profile image error:', error);
+      res.status(500).json({
+        error: 'Failed to upload profile image'
+      });
+    }
+  }
+
+  /**
+   * Delete profile image
+   */
+  async deleteProfileImage(req, res) {
+    try {
+      const userId = req.user.userId;
+
+      // Get current profile
+      const currentProfile = await authRepository.getUserProfile(userId);
+
+      if (!currentProfile) {
+        return res.status(404).json({
+          error: 'User not found'
+        });
+      }
+
+      if (!currentProfile.profile_image_url) {
+        return res.status(400).json({
+          error: 'No profile image to delete'
+        });
+      }
+
+      // Delete image from Cloudinary
+      await cloudinaryService.deleteProfileImage(currentProfile.profile_image_url);
+
+      // Update database to remove image URL
+      const updatedProfile = await authRepository.updateProfileImage(userId, null);
+
+      res.status(200).json({
+        message: 'Profile image deleted successfully',
+        profile: {
+          id: updatedProfile.id,
+          username: updatedProfile.username,
+          email: updatedProfile.email,
+          nombre: updatedProfile.nombre,
+          apellido: updatedProfile.apellido,
+          profile_image_url: null
+        }
+      });
+
+    } catch (error) {
+      console.error('Delete profile image error:', error);
+      res.status(500).json({
+        error: 'Failed to delete profile image'
       });
     }
   }

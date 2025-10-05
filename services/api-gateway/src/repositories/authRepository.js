@@ -281,6 +281,141 @@ class AuthRepository {
       throw error;
     }
   }
+
+  /**
+   * Get complete user profile with all fields
+   */
+  async getUserProfile(userId) {
+    const query = `
+      SELECT 
+        id,
+        username,
+        email,
+        nombre,
+        apellido,
+        fecha_nacimiento,
+        genero,
+        telefono,
+        pais_origen,
+        ciudad_origen,
+        idioma_preferido,
+        tipo_viajero,
+        duracion_viaje_promedio,
+        profile_image_url,
+        fecha_registro,
+        fecha_actualizacion
+      FROM usuarios
+      WHERE id = $1
+    `;
+    
+    try {
+      const result = await db.query(query, [userId]);
+      return result.rows[0] || null;
+    } catch (error) {
+      console.error('Error getting user profile:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Update user profile information
+   */
+  async updateUserInfo(userId, userData) {
+    const {
+      nombre,
+      apellido,
+      fecha_nacimiento,
+      genero,
+      telefono,
+      pais_origen,
+      ciudad_origen,
+      idioma_preferido,
+      tipo_viajero,
+      duracion_viaje_promedio
+    } = userData;
+
+    const query = `
+      UPDATE usuarios
+      SET 
+        nombre = COALESCE($1, nombre),
+        apellido = COALESCE($2, apellido),
+        fecha_nacimiento = COALESCE($3, fecha_nacimiento),
+        genero = COALESCE($4, genero),
+        telefono = COALESCE($5, telefono),
+        pais_origen = COALESCE($6, pais_origen),
+        ciudad_origen = COALESCE($7, ciudad_origen),
+        idioma_preferido = COALESCE($8, idioma_preferido),
+        tipo_viajero = COALESCE($9, tipo_viajero),
+        duracion_viaje_promedio = COALESCE($10, duracion_viaje_promedio),
+        fecha_actualizacion = CURRENT_TIMESTAMP
+      WHERE id = $11
+      RETURNING 
+        id,
+        username,
+        email,
+        nombre,
+        apellido,
+        fecha_nacimiento,
+        genero,
+        telefono,
+        pais_origen,
+        ciudad_origen,
+        idioma_preferido,
+        tipo_viajero,
+        duracion_viaje_promedio,
+        profile_image_url,
+        fecha_actualizacion
+    `;
+
+    try {
+      const result = await db.query(query, [
+        nombre,
+        apellido,
+        fecha_nacimiento,
+        genero,
+        telefono,
+        pais_origen,
+        ciudad_origen,
+        idioma_preferido,
+        tipo_viajero,
+        duracion_viaje_promedio,
+        userId
+      ]);
+      return result.rows[0] || null;
+    } catch (error) {
+      console.error('Error updating user info:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Update user profile image URL
+   */
+  async updateProfileImage(userId, imageUrl) {
+    const query = `
+      UPDATE usuarios
+      SET 
+        profile_image_url = $1,
+        fecha_actualizacion = CURRENT_TIMESTAMP
+      WHERE id = $2
+      RETURNING 
+        id,
+        username,
+        email,
+        nombre,
+        apellido,
+        profile_image_url,
+        fecha_actualizacion
+    `;
+
+    try {
+      const result = await db.query(query, [imageUrl, userId]);
+      return result.rows[0] || null;
+    } catch (error) {
+      console.error('Error updating profile image:', error);
+      throw error;
+    }
+  }
 }
 
 module.exports = new AuthRepository();
