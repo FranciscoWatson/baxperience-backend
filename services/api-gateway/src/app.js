@@ -12,7 +12,9 @@ const valoracionesRoutes = require('./routes/valoraciones');
 const mapsRoutes = require('./routes/maps');
 const bikesRoutes = require('./routes/bikes');
 const statsRoutes = require('./routes/stats');
+const nlpRoutes = require('./routes/nlp');
 const emailService = require('./services/emailService');
+const kafkaService = require('./services/kafkaService');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -56,6 +58,7 @@ app.use('/api/valoraciones', valoracionesRoutes);
 app.use('/api/maps', mapsRoutes);
 app.use('/api/bikes', bikesRoutes);
 app.use('/api/stats', statsRoutes);
+app.use('/api/nlp', nlpRoutes);
 
 // 404 handler
 app.use('*', (req, res) => {
@@ -81,6 +84,15 @@ app.listen(PORT, async () => {
   
   // Verify email service
   await emailService.initialize();
+  
+  // Connect to Kafka (already subscribes to itinerary-responses and nlp-responses)
+  try {
+    await kafkaService.connect();
+    console.log('✅ Kafka service initialized (itinerary + nlp topics)');
+  } catch (error) {
+    console.error('⚠️ Kafka service failed to initialize:', error.message);
+    console.log('NLP and itinerary features may not work properly');
+  }
 });
 
 module.exports = app;

@@ -1,0 +1,26 @@
+# BAXperience NLP Service - Dependencies
+# ===================================================================
+
+# NLP libraries (optional but recommended)
+spacy>=3.7.0
+# Spanish language model: python -m spacy download es_core_news_md
+# English language model: python -m spacy download en_core_web_md
+
+# Text processing
+unidecode>=1.3.0
+
+# Environment variables
+python-dotenv>=1.0.0
+
+# Database connectivity
+psycopg2-binary>=2.9.5
+
+# Fuzzy string matching
+rapidfuzz>=3.0.0
+
+# Kafka integration
+kafka-python==2.0.2
+
+# Date/time utilities
+python-dateutil>=2.8.0
+

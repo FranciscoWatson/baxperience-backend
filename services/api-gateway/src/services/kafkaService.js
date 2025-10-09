@@ -38,11 +38,41 @@ class KafkaService {
       await this.producer.connect();
       await this.consumer.connect();
 
-      // Suscribirse al topic de respuestas de itinerarios por defecto
-      await this.subscribeToResponseTopic('itinerary-responses');
+      // Suscribirse a TODOS los topics de respuestas ANTES de consumer.run()
+      await this.consumer.subscribe({
+        topics: ['itinerary-responses', 'nlp-responses'],
+        fromBeginning: false
+      });
+
+      // Agregar los topics a la lista de suscritos
+      this.subscribedTopics.add('itinerary-responses');
+      this.subscribedTopics.add('nlp-responses');
+
+      // Configurar el handler ÚNICO para TODOS los topics
+      await this.consumer.run({
+        eachMessage: async ({ topic, partition, message }) => {
+          try {
+            const response = JSON.parse(message.value.toString());
+            const requestId = response.request_id;
+
+            console.log(`📥 Response received from topic ${topic} for request: ${requestId}`);
+
+            if (this.pendingRequests.has(requestId)) {
+              const callback = this.pendingRequests.get(requestId);
+              this.pendingRequests.delete(requestId);
+              callback(response);
+            } else {
+              console.log(`⚠️ No pending request found for ID: ${requestId}`);
+            }
+          } catch (error) {
+            console.error('❌ Error processing Kafka response:', error);
+          }
+        }
+      });
 
       this.isConnected = true;
       console.log('✅ Kafka service connected successfully');
+      console.log('📋 Subscribed to topics: itinerary-responses, nlp-responses');
       return true;
 
     } catch (error) {
@@ -53,49 +83,14 @@ class KafkaService {
   }
 
   async subscribeToResponseTopic(topic) {
-    try {
-      if (this.subscribedTopics.has(topic)) {
-        console.log(`Already subscribed to topic: ${topic}`);
-        return;
-      }
-
-      await this.consumer.subscribe({
-        topic: topic,
-        fromBeginning: false
-      });
-
-      this.subscribedTopics.add(topic);
-
-      // Si es la primera suscripción, configurar el handler
-      if (this.subscribedTopics.size === 1) {
-        await this.consumer.run({
-          eachMessage: async ({ topic, partition, message }) => {
-            try {
-              const response = JSON.parse(message.value.toString());
-              const requestId = response.request_id;
-
-              console.log(`📥 Response received from topic ${topic} for request: ${requestId}`);
-
-              if (this.pendingRequests.has(requestId)) {
-                const callback = this.pendingRequests.get(requestId);
-                this.pendingRequests.delete(requestId);
-                callback(response);
-              } else {
-                console.log(`No pending request found for ID: ${requestId}`);
-              }
-            } catch (error) {
-              console.error('Error processing Kafka response:', error);
-            }
-          }
-        });
-      }
-
-      console.log(`✅ Subscribed to response topic: ${topic}`);
-
-    } catch (error) {
-      console.error(`❌ Error subscribing to topic ${topic}:`, error);
-      throw error;
+    // Este método ya no es necesario porque suscribimos a todos los topics en connect()
+    // Lo mantenemos por compatibilidad pero solo verifica si ya está suscrito
+    if (this.subscribedTopics.has(topic)) {
+      console.log(`✅ Already subscribed to topic: ${topic}`);
+      return;
     }
+    
+    console.log(`⚠️ Topic ${topic} not in initial subscription list. Please add it to connect() method.`);
   }
 
   async sendRequest(topic, eventType, userId, requestData, requestPrefix = 'req') {
