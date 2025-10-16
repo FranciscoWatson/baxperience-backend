@@ -275,6 +275,7 @@ class ItineraryRepository {
           p.latitud as poi_latitud,
           p.longitud as poi_longitud,
           p.valoracion_promedio as poi_valoracion,
+          p.numero_valoraciones as poi_numero_valoraciones,
           -- Event data
           e.nombre as evento_nombre,
           e.ubicacion_especifica as evento_lugar,
@@ -329,7 +330,8 @@ class ItineraryRepository {
             barrio: activity.poi_barrio,
             latitud: parseFloat(activity.poi_latitud),
             longitud: parseFloat(activity.poi_longitud),
-            valoracion: parseFloat(activity.poi_valoracion) || 0
+            valoracion_promedio: parseFloat(activity.poi_valoracion) || 0,
+            numero_valoraciones: parseInt(activity.poi_numero_valoraciones) || 0
           };
         } else if (activity.tipo_actividad === 'evento' && activity.evento_id) {
           formattedActivity.evento = {
