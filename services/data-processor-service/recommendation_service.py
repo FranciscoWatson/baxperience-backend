@@ -520,6 +520,7 @@ class RecommendationService:
                         COALESCE(barrio, 'Sin especificar') as barrio, 
                         comuna,
                         COALESCE(valoracion_promedio, 0) as valoracion_promedio, 
+                        COALESCE(numero_valoraciones, 0) as numero_valoraciones,
                         COALESCE(popularidad_score, 0) as popularidad_score,
                         tipo_cocina, tipo_ambiente,
                         COALESCE(tiene_web, false) as tiene_web, 
@@ -579,6 +580,7 @@ class RecommendationService:
                     COALESCE(barrio, 'Sin especificar') as barrio, 
                     comuna,
                     COALESCE(valoracion_promedio, 0) as valoracion_promedio, 
+                    COALESCE(numero_valoraciones, 0) as numero_valoraciones,
                     COALESCE(popularidad_score, 0) as popularidad_score,
                     tipo_cocina, tipo_ambiente,
                     COALESCE(tiene_web, false) as tiene_web, 
@@ -2221,7 +2223,7 @@ class RecommendationService:
             similar_query = """
             SELECT 
                 poi_id, nombre, categoria, barrio,
-                valoracion_promedio, popularidad_score,
+                valoracion_promedio, numero_valoraciones, popularidad_score,
                 tipo_cocina, tipo_ambiente
             FROM lugares_clustering 
             WHERE categoria = %s
