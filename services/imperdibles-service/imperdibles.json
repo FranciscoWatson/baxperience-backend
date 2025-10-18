@@ -1,0 +1,26 @@
+{
+  "imperdibles": [
+    {"nombre": "Teatro Colón", "latitud": -34.601085, "longitud": -58.383079},
+    {"nombre": "El Ateneo Grand Splendid", "latitud": -34.595989, "longitud": -58.394356},
+    {"nombre": "Puente de la Mujer", "latitud": -34.607939, "longitud": -58.364911},
+    {"nombre": "Obelisco", "latitud": -34.603851, "longitud": -58.381775},
+    {"nombre": "El Cabildo", "latitud": -34.608890, "longitud": -58.373610},
+    {"nombre": "Catedral Metropolitana", "latitud": -34.607408, "longitud": -58.373277},
+    {"nombre": "Café Tortoni", "latitud": -34.608685, "longitud": -58.378342},
+    {"nombre": "Casa de Gobierno, Casa Rosada", "latitud": -34.608100, "longitud": -58.370278},
+    {"nombre": "Calle Museo Caminito", "latitud": -34.639167, "longitud": -58.362778},
+    {"nombre": "Palacio Barolo", "latitud": -34.609600, "longitud": -58.385900},
+    {"nombre": "Museo Nacional de Bellas Artes", "latitud": -34.583988, "longitud": -58.393112},
+    {"nombre": "Cementerio de la Recoleta", "latitud": -34.588636, "longitud": -58.392521},
+    {"nombre": "Reserva Ecológica Costanera Sur", "latitud": -34.603890, "longitud": -58.352500},
+    {"nombre": "Planetario Galileo Galilei", "latitud": -34.569720, "longitud": -58.411670},
+    {"nombre": "Rosedal de Palermo", "latitud": -34.570572, "longitud": -58.417480},
+    {"nombre": "Floralis Genérica", "latitud": -34.583231, "longitud": -58.392394},
+    {"nombre": "Estadio de Boca Juniors, La Bombonera", "latitud": -34.635624, "longitud": -58.364967},
+    {"nombre": "Estadio River Plate - Estadio Monumental", "latitud": -34.545278, "longitud": -58.449722},
+    {"nombre": "Feria de Mataderos", "latitud": -34.662555, "longitud": -58.500164},
+    {"nombre": "Galerias Pacífico", "latitud": -34.599240, "longitud": -58.374740},
+    {"nombre": "Zanjón de Granados", "latitud": -34.621835, "longitud": -58.371394},
+    {"nombre": "Plaza Dorrego", "latitud": -34.620278, "longitud": -58.371667}
+  ]
+}
