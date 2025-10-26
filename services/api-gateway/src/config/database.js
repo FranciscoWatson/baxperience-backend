@@ -21,7 +21,7 @@ class DatabaseService {
     try {
       const res = await client.query(text, params);
       const duration = Date.now() - start;
-      console.log('Executed query', { text, duration, rows: res.rowCount });
+      // Query logging disabled for cleaner console output
       return res;
     } finally {
       client.release();

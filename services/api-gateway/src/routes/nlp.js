@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const authMiddleware = require('../middleware/auth');
 const kafkaService = require('../services/kafkaService');
+const logger = require('../utils/logger');
 
 /**
  * Process natural language query
@@ -18,8 +19,6 @@ router.post('/process', authMiddleware, async (req, res) => {
       });
     }
 
-    console.log(`📝 Processing NLP query for user ${userId}: "${query}"`);
-
     try {
       // Enviar solicitud a Kafka y esperar respuesta
       // (el topic nlp-responses ya está suscrito al iniciar el servicio)
@@ -31,8 +30,6 @@ router.post('/process', authMiddleware, async (req, res) => {
         10000, // 10 segundos timeout
         'nlp'
       );
-
-      console.log(`✅ NLP response received for request ${requestId}`);
 
       // Verificar si fue exitoso
       if (response.status === 'success') {
@@ -110,10 +107,9 @@ router.post('/process', authMiddleware, async (req, res) => {
               }
             }));
 
-            console.log(`✅ Found ${pois.length} POIs matching NLP criteria`);
           }
         } catch (dbError) {
-          console.error('⚠️ Error fetching POIs:', dbError.message);
+          logger.logError('NLP - POI Fetch', dbError);
           // No fallar la request, solo devolver sin POIs
         }
 
@@ -132,7 +128,7 @@ router.post('/process', authMiddleware, async (req, res) => {
       }
 
     } catch (kafkaError) {
-      console.error('❌ Error con Kafka NLP:', kafkaError);
+      logger.logError('NLP - Kafka', kafkaError);
       
       if (kafkaError.message.includes('Timeout')) {
         return res.status(504).json({
@@ -148,7 +144,7 @@ router.post('/process', authMiddleware, async (req, res) => {
     }
 
   } catch (error) {
-    console.error('❌ Error processing NLP query:', error.message);
+    logger.logError('NLP Process', error);
     
     res.status(500).json({
       error: 'Failed to process query',
@@ -173,7 +169,7 @@ router.get('/categories', authMiddleware, async (req, res) => {
       }))
     });
   } catch (error) {
-    console.error('❌ Error fetching categories:', error.message);
+    logger.logError('NLP - Get Categories', error);
     res.status(500).json({
       error: 'Failed to fetch categories'
     });
@@ -193,7 +189,7 @@ router.get('/barrios', authMiddleware, async (req, res) => {
       barrios: result.rows.map(row => row.barrio)
     });
   } catch (error) {
-    console.error('❌ Error fetching barrios:', error.message);
+    logger.logError('NLP - Get Barrios', error);
     res.status(500).json({
       error: 'Failed to fetch barrios'
     });

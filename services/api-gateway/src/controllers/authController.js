@@ -4,6 +4,7 @@ const authRepository = require('../repositories/authRepository');
 const verificationCodeRepository = require('../repositories/verificationCodeRepository');
 const emailService = require('../services/emailService');
 const cloudinaryService = require('../services/cloudinaryService');
+const logger = require('../utils/logger');
 
 class AuthController {
   /**
@@ -56,7 +57,7 @@ class AuthController {
       });
 
     } catch (error) {
-      console.error('Request registration code error:', error);
+      logger.logError('Request Registration Code', error);
       res.status(500).json({
         error: 'Failed to send verification code'
       });
@@ -90,7 +91,7 @@ class AuthController {
       });
 
     } catch (error) {
-      console.error('Verify registration code error:', error);
+      logger.logError('Verify Registration Code', error);
       res.status(500).json({
         error: 'Failed to verify code'
       });
@@ -288,7 +289,7 @@ class AuthController {
       });
 
     } catch (error) {
-      console.error('Login error:', error);
+      logger.logError('Login', error);
       res.status(500).json({
         error: 'Internal server error during login'
       });
@@ -319,7 +320,7 @@ class AuthController {
       });
 
     } catch (error) {
-      console.error('Get profile error:', error);
+      logger.logError('Get Profile', error);
       res.status(500).json({
         error: 'Internal server error while fetching profile'
       });
@@ -492,9 +493,9 @@ class AuthController {
       });
 
     } catch (error) {
-      console.error('Verify password reset code error:', error);
+      logger.logError('Verify Password Reset Code', error);
       res.status(500).json({
-        error: 'Failed to verify code'
+        error: 'Failed to verify reset code'
       });
     }
   }
@@ -555,7 +556,7 @@ class AuthController {
       });
 
     } catch (error) {
-      console.error('Reset password error:', error);
+      logger.logError('Reset Password', error);
       res.status(500).json({
         error: 'Failed to reset password'
       });
@@ -800,9 +801,9 @@ class AuthController {
       });
 
     } catch (error) {
-      console.error('Delete profile image error:', error);
+      logger.logError('Delete Profile Image', error);
       res.status(500).json({
-        error: 'Failed to delete profile image'
+        error: 'Internal server error while deleting profile image'
       });
     }
   }

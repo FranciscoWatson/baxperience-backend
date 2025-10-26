@@ -1,4 +1,5 @@
 const { Kafka } = require('kafkajs');
+const logger = require('../utils/logger');
 
 class KafkaService {
   constructor() {
@@ -55,28 +56,26 @@ class KafkaService {
             const response = JSON.parse(message.value.toString());
             const requestId = response.request_id;
 
-            console.log(`📥 Response received from topic ${topic} for request: ${requestId}`);
+            logger.logKafkaResponse(topic, requestId, response.status, response.data || response.error || {});
 
             if (this.pendingRequests.has(requestId)) {
               const callback = this.pendingRequests.get(requestId);
               this.pendingRequests.delete(requestId);
               callback(response);
             } else {
-              console.log(`⚠️ No pending request found for ID: ${requestId}`);
+              logger.logWarning('Kafka', `No pending request found for ID: ${requestId}`);
             }
           } catch (error) {
-            console.error('❌ Error processing Kafka response:', error);
+            logger.logError('Kafka Message Processing', error);
           }
         }
       });
 
       this.isConnected = true;
-      console.log('✅ Kafka service connected successfully');
-      console.log('📋 Subscribed to topics: itinerary-responses, nlp-responses');
       return true;
 
     } catch (error) {
-      console.error('❌ Error connecting to Kafka:', error);
+      logger.logError('Kafka Connection', error);
       this.isConnected = false;
       return false;
     }
@@ -86,11 +85,8 @@ class KafkaService {
     // Este método ya no es necesario porque suscribimos a todos los topics en connect()
     // Lo mantenemos por compatibilidad pero solo verifica si ya está suscrito
     if (this.subscribedTopics.has(topic)) {
-      console.log(`✅ Already subscribed to topic: ${topic}`);
       return;
     }
-    
-    console.log(`⚠️ Topic ${topic} not in initial subscription list. Please add it to connect() method.`);
   }
 
   async sendRequest(topic, eventType, userId, requestData, requestPrefix = 'req') {
@@ -121,11 +117,11 @@ class KafkaService {
         }]
       });
 
-      console.log(`📤 ${eventType} request sent - Request ID: ${requestId}, User: ${userId}, Topic: ${topic}`);
+      logger.logKafkaRequest(topic, eventType, requestId, userId, requestData);
       return requestId;
 
     } catch (error) {
-      console.error(`❌ Error sending ${eventType} request:`, error);
+      logger.logError(`Kafka Send (${eventType})`, error);
       throw new Error(`Failed to send ${eventType} request`);
     }
   }
@@ -157,7 +153,7 @@ class KafkaService {
         resolve(response);
       });
 
-      console.log(`⏳ Waiting for response to request: ${requestId} (timeout: ${timeoutMs}ms)`);
+      logger.logKafkaWaiting(requestId, timeoutMs);
     });
   }
 
@@ -167,7 +163,7 @@ class KafkaService {
       const response = await this.waitForResponse(requestId, responseTimeout);
       return { requestId, response };
     } catch (error) {
-      console.error(`❌ Error in sendAndWaitForResponse for ${eventType}:`, error);
+      logger.logError(`Kafka Send & Wait (${eventType})`, error);
       throw error;
     }
   }
@@ -181,9 +177,8 @@ class KafkaService {
         await this.consumer.disconnect();
       }
       this.isConnected = false;
-      console.log('👋 Kafka service disconnected');
     } catch (error) {
-      console.error('❌ Error disconnecting from Kafka:', error);
+      logger.logError('Kafka Disconnect', error);
     }
   }
 }

@@ -5,6 +5,8 @@ const morgan = require('morgan');
 const rateLimit = require('express-rate-limit');
 require('dotenv').config();
 
+const logger = require('./utils/logger');
+const requestLogger = require('./middleware/requestLogger');
 const authRoutes = require('./routes/auth');
 const itineraryRoutes = require('./routes/itinerary');
 const poisRoutes = require('./routes/pois');
@@ -34,12 +36,12 @@ const limiter = rateLimit({
 });
 app.use(limiter);
 
-// Logging
-app.use(morgan('combined'));
-
-// Body parsing middleware
+// Body parsing middleware (must be before request logger to have access to body)
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
+
+// Custom request logging middleware
+app.use(requestLogger);
 
 // Health check endpoint
 app.get('/health', (req, res) => {
@@ -70,7 +72,7 @@ app.use('*', (req, res) => {
 
 // Global error handler
 app.use((err, req, res, next) => {
-  console.error(err.stack);
+  logger.logError('Global Error Handler', err);
   res.status(500).json({
     error: process.env.NODE_ENV === 'production' 
       ? 'Internal server error' 
@@ -79,19 +81,22 @@ app.use((err, req, res, next) => {
 });
 
 app.listen(PORT, async () => {
-  console.log(`API Gateway running on port ${PORT}`);
-  console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
+  logger.logStartup(PORT, process.env.NODE_ENV || 'development');
   
   // Verify email service
-  await emailService.initialize();
+  try {
+    await emailService.initialize();
+    logger.logServiceInitialization('Email Service', 'success');
+  } catch (error) {
+    logger.logServiceInitialization('Email Service', 'warning');
+  }
   
   // Connect to Kafka (already subscribes to itinerary-responses and nlp-responses)
   try {
     await kafkaService.connect();
-    console.log('✅ Kafka service initialized (itinerary + nlp topics)');
+    logger.logServiceInitialization('Kafka Service', 'success');
   } catch (error) {
-    console.error('⚠️ Kafka service failed to initialize:', error.message);
-    console.log('NLP and itinerary features may not work properly');
+    logger.logServiceInitialization('Kafka Service', 'error');
   }
 });
 

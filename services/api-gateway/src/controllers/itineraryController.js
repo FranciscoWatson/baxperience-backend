@@ -1,6 +1,7 @@
 const itineraryRepository = require('../repositories/itineraryRepository');
 const kafkaService = require('../services/kafkaService');
 const db = require('../config/database');
+const logger = require('../utils/logger');
 
 class ItineraryController {
   async createItinerary(req, res) {
@@ -41,7 +42,7 @@ class ItineraryController {
       });
 
     } catch (error) {
-      console.error('Create itinerary error:', error);
+      logger.logError('Create Itinerary', error);
       res.status(500).json({
         error: 'Internal server error while creating itinerary'
       });
@@ -61,8 +62,6 @@ class ItineraryController {
       if (con_actividades === 'true') {
         itinerarios = await itineraryRepository.getUserItinerariesWithActivities(userId, limite, offset);
         total = await itineraryRepository.getUserItinerariesCount(userId);
-        
-        console.log(`📋 Retrieved ${itinerarios.length} itineraries with activities for user ${userId}`);
       } else {
         // Otherwise, just get basic info
         itinerarios = await itineraryRepository.getUserItineraries(userId, limite, offset);
@@ -82,7 +81,7 @@ class ItineraryController {
       });
 
     } catch (error) {
-      console.error('Get user itineraries error:', error);
+      logger.logError('Get User Itineraries', error);
       res.status(500).json({
         error: 'Internal server error while fetching itineraries',
         details: error.message
@@ -118,7 +117,7 @@ class ItineraryController {
       });
 
     } catch (error) {
-      console.error('Get itinerary by ID error:', error);
+      logger.logError('Get Itinerary By ID', error);
       res.status(500).json({
         error: 'Internal server error while fetching itinerary'
       });
@@ -184,7 +183,7 @@ class ItineraryController {
       });
 
     } catch (error) {
-      console.error('Update itinerary error:', error);
+      logger.logError('Update Itinerary', error);
       res.status(500).json({
         error: 'Internal server error while updating itinerary'
       });
@@ -209,7 +208,7 @@ class ItineraryController {
       });
 
     } catch (error) {
-      console.error('Delete itinerary error:', error);
+      logger.logError('Delete Itinerary', error);
       res.status(500).json({
         error: 'Internal server error while deleting itinerary'
       });
@@ -287,7 +286,7 @@ class ItineraryController {
       });
 
     } catch (error) {
-      console.error('Add activity to itinerary error:', error);
+      logger.logError('Add Activity to Itinerary', error);
       res.status(500).json({
         error: 'Internal server error while adding activity to itinerary'
       });
@@ -343,7 +342,7 @@ class ItineraryController {
       });
 
     } catch (error) {
-      console.error('Get itinerary activities error:', error);
+      logger.logError('Get Itinerary Activities', error);
       res.status(500).json({
         error: 'Internal server error while fetching itinerary activities'
       });
@@ -398,8 +397,6 @@ class ItineraryController {
           error: 'Trip duration must be between 1 and 7 days'
         });
       }
-
-      console.log(`🗓️  Generating ${daysDiff}-day itinerary from ${fecha_visita} to ${finalEndDate}`);
       
       // Validar que fecha_fin no sea anterior a fecha_visita
       if (endDate < startDate) {
@@ -450,14 +447,9 @@ class ItineraryController {
           currentDate.setDate(currentDate.getDate() + dayIndex);
           const currentDateStr = currentDate.toISOString().split('T')[0];
 
-          console.log(`📅 Processing Day ${dayIndex + 1}/${daysDiff} - ${currentDateStr}`);
-
           // Construir los datos de la solicitud para este día específico
           const excludedPoiArray = Array.from(usedPoiIds);
           const excludedEventArray = Array.from(usedEventIds);
-          
-          console.log(`🚫 Day ${dayIndex + 1} - Excluding ${excludedPoiArray.length} POIs: [${excludedPoiArray.join(', ')}]`);
-          console.log(`🚫 Day ${dayIndex + 1} - Excluding ${excludedEventArray.length} events: [${excludedEventArray.join(', ')}]`);
           
           const requestData = {
             name: `${name} - Day ${dayIndex + 1}`,
@@ -497,16 +489,11 @@ class ItineraryController {
               // Check item_type to distinguish between POI and event
               if (actividad.item_type === 'evento' && actividad.evento_id) {
                 usedEventIds.add(actividad.evento_id);
-                console.log(`  📌 Registering event ID: ${actividad.evento_id} - ${actividad.nombre}`);
               } else if (actividad.poi_id) {
                 // Everything else is a POI (item_type='poi' or undefined)
                 usedPoiIds.add(actividad.poi_id);
-                console.log(`  📌 Registering POI ID: ${actividad.poi_id} - ${actividad.nombre}`);
               }
             });
-
-            console.log(`✅ Day ${dayIndex + 1} processed: ${actividades.length} activities added`);
-            console.log(`📊 Total used: ${usedPoiIds.size} POIs, ${usedEventIds.size} events`);
 
           } else if (response.status === 'error') {
             const error = response.error || {};
@@ -562,15 +549,15 @@ class ItineraryController {
         });
 
       } catch (kafkaError) {
-        console.error('Kafka error in generatePersonalizedItinerary:', kafkaError);
+        logger.logError('Itinerary Generation - Kafka', kafkaError);
         
         if (kafkaError.message.includes('Timeout')) {
-          res.status(504).json({
+          return res.status(504).json({
             error: 'Timeout generating itinerary',
             message: 'The itinerary service is taking too long to respond. Please try again later.'
           });
         } else {
-          res.status(503).json({
+          return res.status(503).json({
             error: 'Service unavailable',
             message: 'The itinerary service is currently unavailable. Please try again later.'
           });
@@ -578,7 +565,7 @@ class ItineraryController {
       }
 
     } catch (error) {
-      console.error('Generate personalized itinerary error:', error);
+      logger.logError('Generate Personalized Itinerary', error);
       res.status(500).json({
         error: 'Internal server error while generating personalized itinerary'
       });
@@ -622,8 +609,6 @@ class ItineraryController {
         const finalEndDate = fecha_fin || fecha_visita;
         const totalDays = Math.ceil((new Date(finalEndDate) - new Date(fecha_visita)) / (1000 * 60 * 60 * 24)) + 1;
         
-        console.log(`📅 Saving ${totalDays}-day itinerary from ${fecha_visita} to ${finalEndDate}`);
-
         // 1. Crear el itinerario principal
         const itineraryData = {
           nombre,
@@ -640,7 +625,6 @@ class ItineraryController {
         };
 
         const itinerary = await itineraryRepository.createItineraryWithLocation(userId, itineraryData);
-        console.log(`✅ Itinerary created with ID: ${itinerary.id} (${totalDays} days)`);
 
         // 2. Agregar todas las actividades
         const actividadesCreadas = [];
@@ -675,8 +659,6 @@ class ItineraryController {
             tiempoEstimadoMinutos: actividad.tiempo_estimado_minutos,
             notasPlanificacion: actividad.descripcion || null
           };
-
-          console.log(`  📌 Adding activity: ${actividad.nombre} (Day ${activityData.diaVisita}, Order ${activityData.ordenEnDia})`);
 
           const actividadCreada = await itineraryRepository.addActivityToItinerary(itinerary.id, activityData);
           actividadesCreadas.push({
@@ -717,7 +699,7 @@ class ItineraryController {
       }
 
     } catch (error) {
-      console.error('Confirm itinerary error:', error);
+      logger.logError('Confirm Itinerary', error);
       res.status(500).json({
         error: 'Internal server error while confirming itinerary',
         details: error.message
