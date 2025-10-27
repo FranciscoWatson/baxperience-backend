@@ -8,8 +8,6 @@ class StatsController {
   async getUserStats(req, res) {
     try {
       const userId = req.user.userId;
-      
-      console.log(`📊 Fetching stats for user ${userId}`);
 
       // 1. Itinerarios completados
       const completedItinerariesResult = await db.query(
@@ -44,8 +42,6 @@ class StatsController {
         completedActivities,
         traveledDays
       };
-
-      console.log(`✅ User stats:`, stats);
 
       res.status(200).json({
         success: true,
