@@ -270,6 +270,7 @@ class ETLProcessor:
             tiene_web BOOLEAN DEFAULT FALSE,
             tiene_telefono BOOLEAN DEFAULT FALSE,
             es_gratuito BOOLEAN DEFAULT TRUE, -- museos/monumentos generalmente gratis
+            is_imperdible BOOLEAN DEFAULT FALSE, -- lugar imperdible de Buenos Aires
             
             -- Metadata
             fuente_original VARCHAR(100) NOT NULL,
@@ -350,7 +351,8 @@ class ETLProcessor:
             p.material,
             p.web,
             p.telefono,
-            p.fuente_original
+            p.fuente_original,
+            COALESCE(p.is_imperdible, FALSE) as is_imperdible
         FROM pois p
         JOIN categorias c ON p.categoria_id = c.id
         LEFT JOIN subcategorias s ON p.subcategoria_id = s.id
@@ -374,14 +376,14 @@ class ETLProcessor:
             latitud, longitud, barrio, comuna,
             valoracion_promedio, numero_valoraciones, popularidad_score,
             tipo_cocina, tipo_ambiente, material,
-            tiene_web, tiene_telefono, es_gratuito,
+            tiene_web, tiene_telefono, es_gratuito, is_imperdible,
             fuente_original, activo
         ) VALUES (
             %(poi_id)s, %(nombre)s, %(categoria)s, %(subcategoria)s,
             %(latitud)s, %(longitud)s, %(barrio)s, %(comuna)s,
             %(valoracion_promedio)s, %(numero_valoraciones)s, %(popularidad_score)s,
             %(tipo_cocina)s, %(tipo_ambiente)s, %(material)s,
-            %(tiene_web)s, %(tiene_telefono)s, %(es_gratuito)s,
+            %(tiene_web)s, %(tiene_telefono)s, %(es_gratuito)s, %(is_imperdible)s,
             %(fuente_original)s, %(activo)s
         )
         """
@@ -411,6 +413,7 @@ class ETLProcessor:
                     'tiene_web': bool(poi['web']),
                     'tiene_telefono': bool(poi['telefono']),
                     'es_gratuito': es_gratuito,
+                    'is_imperdible': poi.get('is_imperdible', False),
                     'fuente_original': poi['fuente_original'],
                     'activo': True  # Por defecto activo ya que no existe el campo
                 }

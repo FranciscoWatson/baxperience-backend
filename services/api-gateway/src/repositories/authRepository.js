@@ -416,6 +416,100 @@ class AuthRepository {
       throw error;
     }
   }
+
+  /**
+   * Get all available categories from database
+   */
+  async getAllCategories() {
+    try {
+      const result = await db.query(`
+        SELECT 
+          id, 
+          nombre, 
+          descripcion
+        FROM categorias
+        ORDER BY nombre ASC
+      `);
+      return result.rows;
+    } catch (error) {
+      console.error('Error getting categories:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get user preferences with category details
+   */
+  async getUserPreferences(userId) {
+    try {
+      const result = await db.query(`
+        SELECT 
+          p.id as preferencia_id,
+          p.categoria_id,
+          c.nombre as categoria_nombre,
+          c.descripcion as categoria_descripcion,
+          p.le_gusta
+        FROM preferencias_usuario p
+        INNER JOIN categorias c ON p.categoria_id = c.id
+        WHERE p.usuario_id = $1
+        ORDER BY c.nombre ASC
+      `, [userId]);
+      
+      return result.rows;
+    } catch (error) {
+      console.error('Error getting user preferences:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Update user preferences (replace all)
+   */
+  async updateUserPreferences(userId, preferencias) {
+    const client = await db.getClient();
+    
+    try {
+      await client.query('BEGIN');
+      
+      // Delete existing preferences
+      await client.query(
+        'DELETE FROM preferencias_usuario WHERE usuario_id = $1',
+        [userId]
+      );
+      
+      // Insert new preferences
+      if (preferencias && preferencias.length > 0) {
+        const validPreferencias = preferencias.filter(p => 
+          p.categoria_id !== null && p.categoria_id !== undefined
+        );
+        
+        for (const pref of validPreferencias) {
+          const categoriaId = parseInt(pref.categoria_id, 10);
+          const leGusta = pref.le_gusta !== undefined ? pref.le_gusta : true;
+          
+          if (!isNaN(categoriaId)) {
+            await client.query(
+              `INSERT INTO preferencias_usuario (usuario_id, categoria_id, le_gusta, fecha_creacion, fecha_actualizacion)
+               VALUES ($1, $2, $3, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+              [userId, categoriaId, leGusta]
+            );
+          }
+        }
+      }
+      
+      await client.query('COMMIT');
+      
+      // Get updated preferences
+      return await this.getUserPreferences(userId);
+      
+    } catch (error) {
+      await client.query('ROLLBACK');
+      console.error('Error updating user preferences:', error);
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
 }
 
 module.exports = new AuthRepository();

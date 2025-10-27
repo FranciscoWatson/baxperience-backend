@@ -807,6 +807,93 @@ class AuthController {
       });
     }
   }
+
+  /**
+   * Get all available categories
+   */
+  async getCategories(req, res) {
+    try {
+      const categories = await authRepository.getAllCategories();
+      
+      res.status(200).json({
+        success: true,
+        categories: categories
+      });
+
+    } catch (error) {
+      console.error('Get categories error:', error);
+      res.status(500).json({
+        error: 'Failed to get categories'
+      });
+    }
+  }
+
+  /**
+   * Get user preferences
+   */
+  async getUserPreferences(req, res) {
+    try {
+      const userId = req.user.userId;
+      
+      const preferences = await authRepository.getUserPreferences(userId);
+      
+      res.status(200).json({
+        success: true,
+        preferences: preferences
+      });
+
+    } catch (error) {
+      console.error('Get user preferences error:', error);
+      res.status(500).json({
+        error: 'Failed to get user preferences'
+      });
+    }
+  }
+
+  /**
+   * Update user preferences
+   */
+  async updateUserPreferences(req, res) {
+    try {
+      const userId = req.user.userId;
+      const { preferencias } = req.body;
+
+      // Validate preferences
+      if (!preferencias || !Array.isArray(preferencias)) {
+        return res.status(400).json({
+          error: 'Preferences must be an array'
+        });
+      }
+
+      // Validate each preference object
+      const validPreferencias = preferencias.filter(pref => {
+        return pref.categoria_id !== null && 
+               pref.categoria_id !== undefined &&
+               !isNaN(parseInt(pref.categoria_id, 10));
+      });
+
+      if (validPreferencias.length === 0) {
+        return res.status(400).json({
+          error: 'At least one valid preference must be provided'
+        });
+      }
+
+      // Update preferences
+      const updatedPreferences = await authRepository.updateUserPreferences(userId, validPreferencias);
+      
+      res.status(200).json({
+        success: true,
+        message: 'Preferences updated successfully',
+        preferences: updatedPreferences
+      });
+
+    } catch (error) {
+      console.error('Update user preferences error:', error);
+      res.status(500).json({
+        error: 'Failed to update user preferences'
+      });
+    }
+  }
 }
 
 module.exports = new AuthController();

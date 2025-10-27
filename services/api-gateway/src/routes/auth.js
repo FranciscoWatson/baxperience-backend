@@ -17,6 +17,9 @@ router.post('/password/forgot', authController.requestPasswordReset);
 router.post('/password/verify-code', authController.verifyPasswordResetCode);
 router.post('/password/reset', authController.resetPassword);
 
+// Public routes - Categories (needed for registration and profile setup)
+router.get('/categories', authController.getCategories);
+
 // Protected routes - Profile
 router.get('/profile', authMiddleware, authController.getProfile);
 router.post('/profile/setup', authMiddleware, authController.setupProfile);
@@ -28,5 +31,9 @@ router.put('/profile/info', authMiddleware, authController.updateProfileInfo);
 // Protected routes - Profile Image
 router.post('/profile/image', authMiddleware, upload.single('image'), authController.uploadProfileImage);
 router.delete('/profile/image', authMiddleware, authController.deleteProfileImage);
+
+// Protected routes - User Preferences
+router.get('/profile/preferences', authMiddleware, authController.getUserPreferences);
+router.put('/profile/preferences', authMiddleware, authController.updateUserPreferences);
 
 module.exports = router;

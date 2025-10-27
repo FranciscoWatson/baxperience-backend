@@ -526,6 +526,7 @@ class RecommendationService:
                         COALESCE(tiene_web, false) as tiene_web, 
                         COALESCE(tiene_telefono, false) as tiene_telefono, 
                         COALESCE(es_gratuito, false) as es_gratuito,
+                        COALESCE(is_imperdible, false) as is_imperdible,
                         'poi' as item_type
                     FROM lugares_clustering 
                     WHERE latitud IS NOT NULL AND longitud IS NOT NULL
@@ -586,6 +587,7 @@ class RecommendationService:
                     COALESCE(tiene_web, false) as tiene_web, 
                     COALESCE(tiene_telefono, false) as tiene_telefono, 
                     COALESCE(es_gratuito, false) as es_gratuito,
+                    COALESCE(is_imperdible, false) as is_imperdible,
                     'poi' as item_type
                 FROM lugares_clustering 
                 WHERE latitud IS NOT NULL AND longitud IS NOT NULL
@@ -824,6 +826,11 @@ class RecommendationService:
             if categorias_preferidas and poi.get('categoria') in categorias_preferidas:
                 score += 0.6  # Bonus MUY ALTO para categorías preferidas del usuario
                 logger.debug(f"Bonus categoría preferida aplicado a {poi.get('nombre')}: {poi.get('categoria')}")
+            
+            # 🆕 BONUS MUY ALTO PARA LUGARES IMPERDIBLES
+            if poi.get('is_imperdible', False):
+                score += 1.0  # Bonus MUY ALTO para lugares imperdibles de Buenos Aires
+                logger.debug(f"🌟 Bonus IMPERDIBLE aplicado a {poi.get('nombre')}: +1.0")
             
             # 🆕 BONUS POR CLUSTERING JERÁRQUICO DE CATEGORÍAS
             if 'hierarchical' in self.models and poi.get('categoria'):
