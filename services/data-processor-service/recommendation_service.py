@@ -470,6 +470,196 @@ class RecommendationService:
             logger.warning(f"Error obteniendo cluster de usuario: {e}")
             return None
 
+    def _expand_poi_search(
+        self, 
+        cursor, 
+        categorias: List[str], 
+        actividades_evitar: List[str],
+        excluded_poi_ids: List[int],
+        latitud_origen: float,
+        longitud_origen: float,
+        current_poi_count: int
+    ) -> List[Dict]:
+        """
+        Expandir búsqueda de POIs cuando no hay suficientes en la zona especificada.
+        Busca POIs cercanos al punto de origen DENTRO DE UN RADIO LIMITADO para
+        mantener coherencia geográfica (barrios adyacentes, no toda la ciudad).
+        
+        Args:
+            cursor: Cursor de base de datos
+            categorias: Lista de categorías preferidas
+            actividades_evitar: Lista de actividades a evitar
+            excluded_poi_ids: POIs ya usados que no se deben repetir
+            latitud_origen: Latitud del punto de origen
+            longitud_origen: Longitud del punto de origen
+            current_poi_count: Cantidad actual de POIs encontrados
+            
+        Returns:
+            Lista de POIs adicionales encontrados en barrios cercanos
+        """
+        try:
+            # Calcular cuántos POIs adicionales necesitamos
+            MIN_POIS_TARGET = 15  # Objetivo mínimo de POIs totales
+            pois_needed = MIN_POIS_TARGET - current_poi_count
+            
+            if pois_needed <= 0:
+                return []
+            
+            logger.info(f"🔍 Buscando {pois_needed} POIs adicionales en barrios cercanos a ({latitud_origen}, {longitud_origen})")
+            
+            # Si tenemos coordenadas de origen, buscar por proximidad CON RADIOS PROGRESIVOS
+            if latitud_origen and longitud_origen:
+                # RADIOS PROGRESIVOS DE BÚSQUEDA (en grados)
+                # Aproximadamente: 1 grado = 111 km
+                SEARCH_RADII = [
+                    (0.015, "~1.7 km - barrios inmediatos"),      # Nivel 1: muy cerca
+                    (0.025, "~2.8 km - barrios adyacentes"),      # Nivel 2: cerca  
+                    (0.04, "~4.4 km - barrios adyacentes lejanos") # Nivel 3: más lejos
+                ]
+                
+                all_expanded_pois = []
+                pois_by_distance = {}  # Para ordenar por distancia real
+                
+                for nivel, (max_distance, descripcion) in enumerate(SEARCH_RADII, 1):
+                    # Si ya tenemos suficientes POIs, no seguir expandiendo
+                    if len(all_expanded_pois) >= pois_needed:
+                        logger.info(f"✅ Suficientes POIs encontrados en nivel {nivel-1}, deteniendo expansión")
+                        break
+                    
+                    logger.info(f"📍 Nivel {nivel}: Buscando en radio {descripcion}")
+                    
+                    # Query para este nivel de distancia
+                    expanded_query = """
+                    SELECT 
+                        id, poi_id, nombre, categoria, subcategoria,
+                        latitud, longitud, 
+                        COALESCE(barrio, 'Sin especificar') as barrio, 
+                        comuna,
+                        COALESCE(valoracion_promedio, 0) as valoracion_promedio, 
+                        COALESCE(numero_valoraciones, 0) as numero_valoraciones,
+                        COALESCE(popularidad_score, 0) as popularidad_score,
+                        tipo_cocina, tipo_ambiente,
+                        COALESCE(tiene_web, false) as tiene_web, 
+                        COALESCE(tiene_telefono, false) as tiene_telefono, 
+                        COALESCE(es_gratuito, false) as es_gratuito,
+                        COALESCE(is_imperdible, false) as is_imperdible,
+                        'poi' as item_type,
+                        SQRT(
+                            POW(CAST(latitud AS FLOAT) - %s, 2) + 
+                            POW(CAST(longitud AS FLOAT) - %s, 2)
+                        ) as distancia
+                    FROM lugares_clustering 
+                    WHERE latitud IS NOT NULL AND longitud IS NOT NULL
+                    """
+                    
+                    params = [latitud_origen, longitud_origen]
+                    
+                    # RESTRICCIÓN GEOGRÁFICA: Solo POIs dentro del radio de este nivel
+                    expanded_query += """
+                    AND SQRT(
+                        POW(CAST(latitud AS FLOAT) - %s, 2) + 
+                        POW(CAST(longitud AS FLOAT) - %s, 2)
+                    ) <= %s
+                    """
+                    params.extend([latitud_origen, longitud_origen, max_distance])
+                    
+                    # Filtrar por categorías si están especificadas
+                    if categorias:
+                        categorias_sql = "', '".join(categorias)
+                        expanded_query += f" AND categoria IN ('{categorias_sql}')"
+                    
+                    # Excluir actividades no deseadas
+                    if actividades_evitar:
+                        evitar_sql = "', '".join(actividades_evitar)
+                        expanded_query += f" AND categoria NOT IN ('{evitar_sql}')"
+                    
+                    # Excluir POIs ya usados
+                    if excluded_poi_ids:
+                        expanded_query += " AND poi_id NOT IN %s"
+                        params.append(tuple(excluded_poi_ids))
+                    
+                    # Excluir POIs ya encontrados en niveles anteriores
+                    already_found_ids = [poi['poi_id'] for poi in all_expanded_pois]
+                    if already_found_ids:
+                        expanded_query += " AND poi_id NOT IN %s"
+                        params.append(tuple(already_found_ids))
+                    
+                    # Ordenar por distancia y popularidad
+                    # Priorizar POIs imperdibles y MÁS CERCANOS
+                    expanded_query += """
+                    ORDER BY 
+                        CASE WHEN is_imperdible = true THEN 0 ELSE 1 END,
+                        distancia ASC,
+                        popularidad_score DESC NULLS LAST
+                    LIMIT %s
+                    """
+                    # En cada nivel, buscar más POIs de los necesarios para tener opciones
+                    params.append((pois_needed - len(all_expanded_pois)) * 2)
+                    
+                    cursor.execute(expanded_query, params)
+                    pois_result = cursor.fetchall()
+                    level_pois = [dict(poi) for poi in pois_result]
+                    
+                    if level_pois:
+                        logger.info(f"   ✓ Nivel {nivel}: {len(level_pois)} POIs encontrados")
+                        all_expanded_pois.extend(level_pois)
+                        
+                        # Guardar distancias para ordenamiento final
+                        for poi in level_pois:
+                            poi_id = poi['poi_id']
+                            if poi_id not in pois_by_distance:
+                                pois_by_distance[poi_id] = poi
+                    else:
+                        logger.info(f"   ✗ Nivel {nivel}: Sin POIs en este radio")
+                
+                # Log de barrios encontrados para verificar que son cercanos
+                barrios_encontrados = set(poi['barrio'] for poi in all_expanded_pois if poi.get('barrio'))
+                if barrios_encontrados:
+                    logger.info(f"🏘️ Barrios cercanos encontrados: {', '.join(sorted(barrios_encontrados))}")
+                
+                # Ordenar todos los POIs por distancia (más cercanos primero)
+                all_expanded_pois.sort(key=lambda x: x.get('distancia', 999))
+                
+                # Balancear por categoría manteniendo preferencia por cercanía
+                if len(categorias) > 1:
+                    pois_by_category = {}
+                    for poi in all_expanded_pois:
+                        cat = poi['categoria']
+                        if cat not in pois_by_category:
+                            pois_by_category[cat] = []
+                        pois_by_category[cat].append(poi)
+                    
+                    # Tomar proporcionalmente de cada categoría
+                    pois_per_category = max(1, pois_needed // len(categorias))
+                    balanced_pois = []
+                    
+                    for cat in categorias:
+                        if cat in pois_by_category:
+                            # Tomar los MÁS CERCANOS de esta categoría
+                            cat_pois = pois_by_category[cat][:pois_per_category]
+                            balanced_pois.extend(cat_pois)
+                    
+                    # Si aún faltan POIs, agregar los mejores restantes (MÁS CERCANOS)
+                    if len(balanced_pois) < pois_needed:
+                        remaining = [p for p in all_expanded_pois if p not in balanced_pois]
+                        # Ya están ordenados por distancia, solo tomar los primeros
+                        balanced_pois.extend(remaining[:pois_needed - len(balanced_pois)])
+                    
+                    return balanced_pois[:pois_needed]
+                else:
+                    return all_expanded_pois[:pois_needed]
+            else:
+                # Sin coordenadas de origen, NO expandir la búsqueda
+                # Es mejor fallar que devolver POIs de cualquier parte de la ciudad
+                logger.warning("⚠️ No hay coordenadas de origen, no se puede expandir búsqueda de forma inteligente")
+                return []
+                
+        except Exception as e:
+            logger.error(f"Error expandiendo búsqueda de POIs: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            return []
+
     def filter_pois_and_events_by_clusters(self, user_prefs: Dict) -> Dict[str, List[Dict]]:
         """
         Filtrar POIs y eventos usando clusters geográficos y temáticos
@@ -739,6 +929,37 @@ class RecommendationService:
                 eventos.append(evento)
             
             logger.info(f"POIs filtrados: {len(pois)}, Eventos filtrados: {len(eventos)}")
+            
+            # === FALLBACK: EXPANDIR BÚSQUEDA SI NO HAY SUFICIENTES POIs ===
+            MIN_POIS_REQUIRED = 5  # Mínimo de POIs necesarios para un itinerario
+            
+            if len(pois) < MIN_POIS_REQUIRED and zona and zona.strip():
+                logger.warning(f"⚠️ Solo {len(pois)} POIs encontrados en zona '{zona}'. Expandiendo búsqueda a zonas cercanas...")
+                
+                # Expandir búsqueda sin restricción de zona pero manteniendo categorías
+                pois_expanded = self._expand_poi_search(
+                    cursor, 
+                    categorias, 
+                    actividades_evitar, 
+                    excluded_poi_ids,
+                    latitud_origen,
+                    longitud_origen,
+                    current_poi_count=len(pois)
+                )
+                
+                if pois_expanded:
+                    logger.info(f"✅ Búsqueda expandida: {len(pois_expanded)} POIs adicionales encontrados")
+                    pois.extend(pois_expanded)
+                    # Eliminar duplicados manteniendo orden
+                    seen_ids = set()
+                    pois_unique = []
+                    for poi in pois:
+                        poi_id = poi.get('poi_id') or poi.get('id')
+                        if poi_id not in seen_ids:
+                            seen_ids.add(poi_id)
+                            pois_unique.append(poi)
+                    pois = pois_unique
+                    logger.info(f"📊 Total después de expansión y deduplicación: {len(pois)} POIs")
             
             return {
                 'pois': pois,
