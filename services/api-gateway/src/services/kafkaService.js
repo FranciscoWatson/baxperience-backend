@@ -41,13 +41,14 @@ class KafkaService {
 
       // Suscribirse a TODOS los topics de respuestas ANTES de consumer.run()
       await this.consumer.subscribe({
-        topics: ['itinerary-responses', 'nlp-responses'],
+        topics: ['itinerary-responses', 'nlp-responses', 'nearby-pois-responses'],
         fromBeginning: false
       });
 
       // Agregar los topics a la lista de suscritos
       this.subscribedTopics.add('itinerary-responses');
       this.subscribedTopics.add('nlp-responses');
+      this.subscribedTopics.add('nearby-pois-responses');
 
       // Configurar el handler ÚNICO para TODOS los topics
       await this.consumer.run({
@@ -133,6 +134,11 @@ class KafkaService {
 
   async sendItineraryRequestAndWait(userId, requestData, timeout = 45000) {
     return this.sendAndWaitForResponse('itinerary-requests', 'itinerary_request', userId, requestData, timeout, 'itinerary_req');
+  }
+
+  async sendNearbyPoisRequestAndWait(requestData, timeout = 30000) {
+    // Para nearby POIs no necesitamos userId, pero usamos 0 como placeholder
+    return this.sendAndWaitForResponse('nearby-pois-requests', 'nearby_pois_request', 0, requestData, timeout, 'nearby_pois_req');
   }
 
   waitForResponse(requestId, timeoutMs = 45000) {

@@ -15,6 +15,7 @@ const mapsRoutes = require('./routes/maps');
 const bikesRoutes = require('./routes/bikes');
 const statsRoutes = require('./routes/stats');
 const nlpRoutes = require('./routes/nlp');
+const processorRoutes = require('./routes/processor');
 const emailService = require('./services/emailService');
 const kafkaService = require('./services/kafkaService');
 
@@ -61,6 +62,7 @@ app.use('/api/maps', mapsRoutes);
 app.use('/api/bikes', bikesRoutes);
 app.use('/api/stats', statsRoutes);
 app.use('/api/nlp', nlpRoutes);
+app.use('/api/processor', processorRoutes);
 
 // 404 handler
 app.use('*', (req, res) => {

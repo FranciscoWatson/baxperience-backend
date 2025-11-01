@@ -24,11 +24,20 @@ logger = logging.getLogger(__name__)
 class DataProcessorHandler(BaseHTTPRequestHandler):
     """Handler para las peticiones HTTP"""
     
+    def do_OPTIONS(self):
+        """Manejar peticiones OPTIONS para CORS"""
+        self.send_response(200)
+        self.send_header('Access-Control-Allow-Origin', '*')
+        self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+        self.send_header('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+        self.end_headers()
+    
     def do_GET(self):
         """Manejar peticiones GET"""
         if self.path == '/health':
             self.send_response(200)
             self.send_header('Content-type', 'application/json')
+            self.send_header('Access-Control-Allow-Origin', '*')
             self.end_headers()
             
             response = {
@@ -43,6 +52,7 @@ class DataProcessorHandler(BaseHTTPRequestHandler):
         elif self.path == '/status':
             self.send_response(200)
             self.send_header('Content-type', 'application/json')
+            self.send_header('Access-Control-Allow-Origin', '*')
             self.end_headers()
             
             response = {
@@ -56,6 +66,7 @@ class DataProcessorHandler(BaseHTTPRequestHandler):
             
         else:
             self.send_response(404)
+            self.send_header('Access-Control-Allow-Origin', '*')
             self.end_headers()
             self.wfile.write(b'Not Found')
     
@@ -104,16 +115,20 @@ class DataProcessorHandler(BaseHTTPRequestHandler):
                 
                 self.send_response(200)
                 self.send_header('Content-type', 'application/json')
+                self.send_header('Access-Control-Allow-Origin', '*')
                 self.end_headers()
                 self.wfile.write(json.dumps(response).encode())
                 
             except Exception as e:
                 logger.error(f"Error procesando recomendación: {e}")
                 self.send_response(500)
+                self.send_header('Access-Control-Allow-Origin', '*')
                 self.end_headers()
                 self.wfile.write(b'Internal Server Error')
+        
         else:
             self.send_response(404)
+            self.send_header('Access-Control-Allow-Origin', '*')
             self.end_headers()
             self.wfile.write(b'Not Found')
     
@@ -177,6 +192,7 @@ class DataProcessorService:
             self.consumer = KafkaConsumer(
                 'scraper-events',
                 'itinerary-requests',  # Nuevo tópico para solicitudes de itinerarios
+                'nearby-pois-requests',  # Nuevo tópico para solicitudes de POIs cercanos
                 bootstrap_servers=self.kafka_bootstrap_servers,
                 value_deserializer=lambda m: json.loads(m.decode('utf-8')),
                 group_id='data-processor-service',
@@ -201,6 +217,9 @@ class DataProcessorService:
                     # Procesar solicitud de itinerario
                     elif event_data.get('event_type') == 'itinerary_request':
                         self._process_itinerary_request(event_data)
+                    # Procesar solicitud de POIs cercanos
+                    elif event_data.get('event_type') == 'nearby_pois_request':
+                        self._process_nearby_pois_request(event_data)
                         
                 except Exception as e:
                     logger.error(f"❌ Error procesando evento: {e}")
@@ -380,6 +399,170 @@ class DataProcessorService:
             
         except Exception as e:
             logger.error(f"❌ Error publicando error de itinerario: {e}")
+    
+    def _process_nearby_pois_request(self, event_data: Dict[str, Any]):
+        """Procesar solicitud de POIs cercanos vía eventos"""
+        request_id = event_data.get('request_id', 'unknown')
+        logger.info(f"🔍 Procesando solicitud de POIs cercanos - Request ID: {request_id}")
+        
+        try:
+            # Extraer parámetros - puede venir en 'data' o 'request_data'
+            data = event_data.get('request_data', event_data.get('data', {}))
+            latitud_origen = data.get('latitud_origen')
+            longitud_origen = data.get('longitud_origen')
+            radio_km = data.get('radio_km', 1)
+            limite = data.get('limite', 10)
+            categorias = data.get('categorias', [])  # Nueva: lista de categorías a filtrar
+            
+            # Validar parámetros
+            if latitud_origen is None or longitud_origen is None:
+                raise ValueError("latitud_origen y longitud_origen son requeridos")
+            
+            logger.info(f"   Origen: ({latitud_origen}, {longitud_origen})")
+            logger.info(f"   Radio: {radio_km} km")
+            logger.info(f"   Límite: {limite}")
+            if categorias:
+                logger.info(f"   Categorías filtradas: {categorias}")
+            
+            # Buscar POIs cercanos
+            import psycopg2
+            from csv_processor import DatabaseConfig
+            
+            conn = psycopg2.connect(**DatabaseConfig.OPERATIONAL_DB)
+            cursor = conn.cursor()
+            
+            # Calcular distancia en grados aproximada
+            radio_grados = radio_km * 0.009
+            
+            # Construir filtro de categorías si se proporcionan
+            categoria_filter = ""
+            query_params = [
+                latitud_origen, longitud_origen, latitud_origen,
+                latitud_origen - radio_grados, latitud_origen + radio_grados,
+                longitud_origen - radio_grados, longitud_origen + radio_grados
+            ]
+            
+            if categorias and len(categorias) > 0:
+                # Agregar filtro WHERE para categorías
+                placeholders = ', '.join(['%s'] * len(categorias))
+                categoria_filter = f"AND c.nombre IN ({placeholders})"
+                # Agregar categorías a los parámetros antes del radio_km
+                query_params_with_cat = query_params + categorias + [radio_km, limite]
+            else:
+                categoria_filter = ""
+                query_params_with_cat = query_params + [radio_km, limite]
+            
+            # Query con filtro de distancia real y categorías opcionales
+            query = f"""
+            SELECT 
+                id,
+                nombre,
+                categoria,
+                barrio,
+                latitud,
+                longitud,
+                descripcion,
+                direccion,
+                valoracion_promedio,
+                numero_valoraciones,
+                distancia_km
+            FROM (
+                SELECT 
+                    p.id,
+                    p.nombre,
+                    c.nombre as categoria,
+                    p.barrio,
+                    p.latitud,
+                    p.longitud,
+                    p.descripcion,
+                    p.direccion,
+                    p.valoracion_promedio,
+                    p.numero_valoraciones,
+                    (
+                        6371 * acos(
+                            cos(radians(%s)) * cos(radians(p.latitud)) *
+                            cos(radians(p.longitud) - radians(%s)) +
+                            sin(radians(%s)) * sin(radians(p.latitud))
+                        )
+                    ) AS distancia_km
+                FROM pois p
+                LEFT JOIN categorias c ON p.categoria_id = c.id
+                WHERE 
+                    p.latitud IS NOT NULL 
+                    AND p.longitud IS NOT NULL
+                    AND p.latitud BETWEEN %s AND %s
+                    AND p.longitud BETWEEN %s AND %s
+                    {categoria_filter}
+            ) AS pois_con_distancia
+            WHERE distancia_km <= %s
+            ORDER BY distancia_km
+            LIMIT %s
+            """
+            
+            cursor.execute(query, query_params_with_cat)
+            
+            pois = []
+            for row in cursor.fetchall():
+                pois.append({
+                    'id': row[0],
+                    'nombre': row[1],
+                    'categoria': row[2],
+                    'barrio': row[3],
+                    'latitud': float(row[4]) if row[4] else None,
+                    'longitud': float(row[5]) if row[5] else None,
+                    'descripcion': row[6],
+                    'direccion': row[7],
+                    'valoracion_promedio': float(row[8]) if row[8] else 0,
+                    'numero_valoraciones': row[9] if row[9] else 0,
+                    'distancia_km': float(row[10]) if row[10] else 0
+                })
+            
+            cursor.close()
+            conn.close()
+            
+            logger.info(f"✅ Encontrados {len(pois)} POIs cercanos")
+            
+            # Publicar respuesta exitosa
+            success_event = {
+                'event_type': 'nearby_pois_response',
+                'request_id': request_id,
+                'timestamp': datetime.now().isoformat(),
+                'status': 'success',
+                'data': {
+                    'pois': pois,
+                    'total': len(pois),
+                    'radio_km': radio_km,
+                    'coordenadas_origen': {
+                        'latitud': latitud_origen,
+                        'longitud': longitud_origen
+                    }
+                }
+            }
+            
+            future = self.producer.send('nearby-pois-responses', key=request_id, value=success_event)
+            future.get()
+            logger.info(f"📤 Respuesta de POIs cercanos publicada - Request ID: {request_id}")
+            
+        except Exception as e:
+            logger.error(f"❌ Error procesando solicitud de POIs cercanos: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            
+            # Publicar evento de error
+            error_event = {
+                'event_type': 'nearby_pois_response',
+                'request_id': request_id,
+                'timestamp': datetime.now().isoformat(),
+                'status': 'error',
+                'error': str(e)
+            }
+            
+            try:
+                future = self.producer.send('nearby-pois-responses', key=request_id, value=error_event)
+                future.get()
+                logger.info(f"📤 Error de POIs cercanos publicado - Request ID: {request_id}")
+            except Exception as pub_error:
+                logger.error(f"❌ Error publicando error: {pub_error}")
     
     def _run_etl(self, event_data: Dict[str, Any]) -> Dict[str, Any]:
         """Ejecutar ETL"""
