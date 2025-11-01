@@ -20,8 +20,6 @@ class EcobiciDatabaseService {
     
     try {
       const res = await client.query(text, params);
-      const duration = Date.now() - start;
-      console.log('Executed EcoBici query', { text: text.substring(0, 50), duration, rows: res.rowCount });
       return res;
     } finally {
       client.release();
