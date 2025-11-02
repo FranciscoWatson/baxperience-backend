@@ -51,3 +51,8 @@ geopy>=2.3.0
 
 # Rate limiting for API calls
 ratelimit>=2.2.1
+
+# Testing
+pytest>=7.4.0
+pytest-cov>=4.1.0
+pytest-mock>=3.11.0
