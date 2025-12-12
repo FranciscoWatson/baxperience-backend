@@ -18,7 +18,7 @@ import numpy as np
 import pandas as pd
 from sklearn.cluster import KMeans, DBSCAN
 from sklearn.cluster import AgglomerativeClustering
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import StandardScaler, MinMaxScaler
 from sklearn.metrics import silhouette_score
 from sklearn.decomposition import PCA
 import psycopg2
@@ -88,7 +88,7 @@ class ClusteringProcessor:
     
     def find_optimal_clusters(self, coords_scaled: np.ndarray, max_k: int = 15) -> int:
         """
-        Encuentra el número óptimo de clusters usando el método del codo
+        Encuentra el número óptimo de clusters usando Silhouette score
         
         Args:
             coords_scaled: Coordenadas normalizadas
@@ -105,34 +105,25 @@ class ClusteringProcessor:
         # Limitar max_k al número de puntos disponibles
         max_k = min(max_k, len(coords_scaled) - 1)
         
-        inertias = []
-        k_range = range(2, max_k + 1)
+        silhouette_scores = []
+        k_range = range(2, min(max_k + 1, 20))  # Limitar a 20 para eficiencia
         
         for k in k_range:
-            kmeans = KMeans(n_clusters=k, random_state=42, n_init=10)
-            kmeans.fit(coords_scaled)
-            inertias.append(kmeans.inertia_)
+            kmeans = KMeans(n_clusters=k, random_state=42, n_init=20, max_iter=500)
+            labels = kmeans.fit_predict(coords_scaled)
+            score = silhouette_score(coords_scaled, labels)
+            silhouette_scores.append(score)
+            logger.debug(f"K={k}, Silhouette={score:.3f}")
         
-        # Método del codo: buscar el punto donde la mejora se estabiliza
-        if len(inertias) < 2:
+        # Seleccionar k con mejor silhouette score
+        if not silhouette_scores:
             return 2
         
-        # Calcular las diferencias (derivada discreta)
-        diffs = np.diff(inertias)
+        optimal_idx = np.argmax(silhouette_scores)
+        optimal_k = list(k_range)[optimal_idx]
+        best_score = silhouette_scores[optimal_idx]
         
-        # Calcular las segundas diferencias (curvatura)
-        if len(diffs) < 2:
-            return 3
-        
-        second_diffs = np.diff(diffs)
-        
-        # El codo está donde la curvatura es máxima (más negativa)
-        optimal_k = np.argmin(second_diffs) + 3  # +3 porque empezamos en k=2 y perdemos 2 elementos
-        
-        # Asegurar que esté en rango válido
-        optimal_k = max(2, min(optimal_k, max_k))
-        
-        logger.info(f"Número óptimo de clusters determinado: {optimal_k}")
+        logger.info(f"Número óptimo de clusters determinado: {optimal_k} (Silhouette: {best_score:.3f})")
         return optimal_k
 
     def geographic_clustering(self, df: pd.DataFrame, n_clusters: Optional[int] = None) -> Dict:
@@ -152,18 +143,18 @@ class ClusteringProcessor:
         # Preparar datos geográficos
         coords = df[['latitud', 'longitud']].astype(float).values
         
-        # Normalizar coordenadas
-        scaler = StandardScaler()
+        # Normalizar coordenadas usando MinMaxScaler (mejor para datos geográficos)
+        scaler = MinMaxScaler()
         coords_scaled = scaler.fit_transform(coords)
         
         # Determinar número óptimo de clusters si no se especifica
         if n_clusters is None:
             n_clusters = self.find_optimal_clusters(coords_scaled)
         
-        logger.info(f"Ejecutando clustering geográfico con {n_clusters} clusters...")
+        logger.info(f"Ejecutando K-Means geográfico con {n_clusters} clusters...")
         
-        # K-means clustering
-        kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
+        # K-means clustering con más iteraciones para mejor convergencia
+        kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=20, max_iter=500)
         cluster_labels = kmeans.fit_predict(coords_scaled)
         
         # Calcular métricas de calidad
@@ -196,6 +187,13 @@ class ClusteringProcessor:
                 }
                 cluster_stats.append(stats)
         
+        # Crear mapeo poi_id -> cluster_id para usar en recomendaciones
+        poi_clusters = {}
+        for idx, row in df_clustered.iterrows():
+            poi_id = int(row['id'])  # id de lugares_clustering
+            cluster_id = int(row['cluster_geografico'])
+            poi_clusters[poi_id] = cluster_id
+        
         results = {
             'status': 'success',
             'algorithm': 'kmeans',
@@ -203,6 +201,7 @@ class ClusteringProcessor:
             'silhouette_score': float(silhouette),
             'total_pois': len(df),
             'cluster_stats': cluster_stats,
+            'poi_clusters': poi_clusters,  # ← AGREGADO: mapeo para recomendaciones
             'dataframe': df_clustered
         }
         
@@ -271,6 +270,13 @@ class ClusteringProcessor:
                 }
                 cluster_stats.append(stats)
         
+        # Crear mapeo poi_id -> cluster_id para usar en recomendaciones
+        poi_clusters = {}
+        for idx, row in df_clustered.iterrows():
+            poi_id = int(row['id'])  # id de lugares_clustering
+            cluster_id = int(row['cluster_dbscan'])
+            poi_clusters[poi_id] = cluster_id
+        
         results = {
             'status': 'success',
             'algorithm': 'dbscan',
@@ -279,6 +285,7 @@ class ClusteringProcessor:
             'noise_ratio': n_noise / len(df) if len(df) > 0 else 0,
             'silhouette_score': float(silhouette),
             'cluster_stats': cluster_stats,
+            'poi_clusters': poi_clusters,  # ← AGREGADO: mapeo para recomendaciones
             'dataframe': df_clustered
         }
         
@@ -335,12 +342,20 @@ class ClusteringProcessor:
                 }
                 cluster_stats.append(stats)
         
+        # Crear mapeo poi_id -> cluster_id para usar en recomendaciones
+        poi_clusters = {}
+        for idx, row in df_clustered.iterrows():
+            poi_id = int(row['id'])  # id de lugares_clustering
+            cluster_id = int(row['cluster_hierarchical'])
+            poi_clusters[poi_id] = cluster_id
+        
         results = {
             'status': 'success',
             'algorithm': 'hierarchical',
             'n_clusters': n_clusters,
             'silhouette_score': float(silhouette),
             'cluster_stats': cluster_stats,
+            'poi_clusters': poi_clusters,  # ← AGREGADO: mapeo para recomendaciones
             'dataframe': df_clustered
         }
         
