@@ -443,31 +443,67 @@ class RecommendationService:
         
         return base_query, params
     
-    def _get_user_cluster_profile(self, user_id: int) -> Optional[int]:
+    def _get_poi_geographic_cluster(self, poi_id: str) -> Optional[int]:
         """
-        Obtener el cluster de perfil de usuario usando K-means
-        Para segmentación de comportamiento de usuario
+        Obtener el cluster geográfico (Norte/Centro/Sur) de un POI usando K-means
+        Para bonus de diversidad geográfica en recomendaciones
         """
         try:
-            if 'kmeans' not in self.models:
+            if 'geographic' not in self.models:
                 return None
                 
-            # Por ahora, usar lógica simple basada en preferencias
-            # En el futuro, esto usaría un modelo K-means entrenado sobre comportamiento de usuarios
-            user_prefs = self.get_user_preferences(user_id, None)  # Sin request_data aquí
+            geographic_results = self.models['geographic']['results']
             
-            # Mapeo simple a clusters de usuario (a mejorar con datos reales)
-            if 'Gastronomía' in user_prefs.get('categorias_preferidas', []):
-                return 0  # Cluster foodie
-            elif 'Museos' in user_prefs.get('categorias_preferidas', []):
-                return 1  # Cluster cultural  
-            elif 'Entretenimiento' in user_prefs.get('categorias_preferidas', []):
-                return 2  # Cluster entretenimiento
-            else:
+            if 'poi_clusters' not in geographic_results:
                 return None
+            
+            poi_clusters = geographic_results['poi_clusters']
+            
+            # Obtener cluster del POI
+            return poi_clusters.get(str(poi_id))
                 
         except Exception as e:
-            logger.warning(f"Error obteniendo cluster de usuario: {e}")
+            logger.debug(f"Error obteniendo cluster geográfico de POI: {e}")
+            return None
+    
+    def _get_user_origin_cluster(self, lat_origen: float, lng_origen: float) -> Optional[int]:
+        """
+        Determinar en qué cluster geográfico (Norte/Centro/Sur) está el punto de origen del usuario
+        usando distancia al centroide de cada cluster K-means
+        """
+        try:
+            if 'geographic' not in self.models:
+                return None
+            
+            if lat_origen is None or lng_origen is None:
+                return None
+                
+            geographic_results = self.models['geographic']['results']
+            
+            if 'cluster_centers' not in geographic_results:
+                return None
+            
+            cluster_centers = geographic_results['cluster_centers']
+            
+            # Encontrar cluster más cercano al origen
+            min_distancia = float('inf')
+            cluster_cercano = None
+            
+            for cluster_id, centroid in cluster_centers.items():
+                lat_centroid = centroid[0]
+                lng_centroid = centroid[1]
+                
+                distancia = self._calculate_distance(lat_origen, lng_origen, lat_centroid, lng_centroid)
+                
+                if distancia < min_distancia:
+                    min_distancia = distancia
+                    cluster_cercano = int(cluster_id)
+            
+            logger.info(f"Origen del usuario en cluster geográfico: {cluster_cercano} (distancia: {min_distancia:.2f}km)")
+            return cluster_cercano
+                
+        except Exception as e:
+            logger.warning(f"Error determinando cluster de origen: {e}")
             return None
 
     def _expand_poi_search(
@@ -991,13 +1027,12 @@ class RecommendationService:
         if not pois:
             return []
         
-        # Obtener coordenadas de origen para cálculos de proximidad
+        # Obtener coordenadas de origen para cálculos de proximidad y diversidad geográfica
         lat_origen = user_prefs.get('latitud_origen')
         lng_origen = user_prefs.get('longitud_origen')
         
-        # Obtener información de clusters para el usuario
-        user_id = user_prefs.get('user_id')
-        user_cluster_profile = self._get_user_cluster_profile(user_id) if user_id else None
+        # Determinar cluster geográfico del origen para bonus de diversidad
+        user_origin_cluster = self._get_user_origin_cluster(lat_origen, lng_origen) if lat_origen and lng_origen else None
         
         scored_pois = []
         
@@ -1060,12 +1095,14 @@ class RecommendationService:
                     score += cluster_bonus
                     logger.debug(f"Bonus clustering jerárquico aplicado: +{cluster_bonus:.2f}")
             
-            # 🆕 BONUS POR CLUSTER DE PERFIL DE USUARIO (K-MEANS)
-            if user_cluster_profile is not None:
-                profile_bonus = self._calculate_user_profile_bonus(poi, user_cluster_profile)
-                if profile_bonus > 0:
-                    score += profile_bonus
-                    logger.debug(f"Bonus perfil de usuario aplicado: +{profile_bonus:.2f}")
+            # 🆕 BONUS POR DIVERSIDAD GEOGRÁFICA (K-MEANS)
+            if user_origin_cluster is not None:
+                diversity_bonus = self._calculate_geographic_diversity_bonus(
+                    poi.get('poi_id'), user_origin_cluster
+                )
+                if diversity_bonus > 0:
+                    score += diversity_bonus
+                    logger.debug(f"Bonus diversidad geográfica aplicado: +{diversity_bonus:.2f}")
             
             # Bonus adicional para actividades gratuitas (sin considerar presupuesto)
             if poi.get('es_gratuito'):
@@ -1151,43 +1188,30 @@ class RecommendationService:
             logger.debug(f"Error calculando bonus clustering jerárquico: {e}")
             return 0.0
     
-    def _calculate_user_profile_bonus(self, poi: Dict, user_cluster_profile: int) -> float:
+    def _calculate_geographic_diversity_bonus(self, poi_id: str, user_origin_cluster: int) -> float:
         """
-        Calcular bonus basado en el perfil de cluster del usuario (K-means)
-        Usa características del POI que coinciden con el perfil de usuario
+        Calcular bonus por diversidad geográfica usando K-means
+        Incentiva explorar diferentes zonas de Buenos Aires (Norte/Centro/Sur)
+        
+        Lógica:
+        - POIs en el mismo cluster que el origen: Sin bonus (zona conocida)
+        - POIs en clusters diferentes: +0.15 bonus (explorar nuevas zonas)
         """
         try:
-            bonus = 0.0
-            categoria = poi.get('categoria', '')
+            poi_cluster = self._get_poi_geographic_cluster(poi_id)
             
-            # Bonuses específicos por cluster de perfil de usuario
-            if user_cluster_profile == 0:  # Cluster foodie
-                if categoria == 'Gastronomía':
-                    bonus += 0.25
-                    # Bonus adicional por características gastronómicas
-                    if poi.get('tipo_cocina'):
-                        bonus += 0.05
-                    if poi.get('tipo_ambiente') == 'Elegante':
-                        bonus += 0.05
-                        
-            elif user_cluster_profile == 1:  # Cluster cultural
-                if categoria in ['Museos', 'Monumentos', 'Lugares Históricos']:
-                    bonus += 0.25
-                    # Bonus adicional por características culturales
-                    if poi.get('tiene_web'):  # Lugares culturales suelen tener buena información
-                        bonus += 0.05
-                        
-            elif user_cluster_profile == 2:  # Cluster entretenimiento
-                if categoria == 'Entretenimiento':
-                    bonus += 0.25
-                    # Bonus por características de entretenimiento
-                    if not poi.get('es_gratuito'):  # Entretenimiento de pago suele ser de mejor calidad
-                        bonus += 0.05
+            if poi_cluster is None:
+                return 0.0
             
-            return bonus
+            # Bonus por explorar zonas diferentes de la ciudad
+            if poi_cluster != user_origin_cluster:
+                logger.debug(f"POI {poi_id} en cluster {poi_cluster}, origen en {user_origin_cluster} → +0.15 diversidad")
+                return 0.15  # Bonus por diversidad geográfica
+            else:
+                return 0.0  # Sin bonus si está en la misma zona
             
         except Exception as e:
-            logger.debug(f"Error calculando bonus perfil de usuario: {e}")
+            logger.debug(f"Error calculando bonus diversidad geográfica: {e}")
             return 0.0
 
     def calculate_event_scores(self, eventos: List[Dict], user_prefs: Dict) -> List[Dict]:

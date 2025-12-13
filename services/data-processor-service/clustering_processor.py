@@ -125,6 +125,56 @@ class ClusteringProcessor:
         
         logger.info(f"Número óptimo de clusters determinado: {optimal_k} (Silhouette: {best_score:.3f})")
         return optimal_k
+    
+    def _find_optimal_hierarchical_clusters(self, coords_scaled: np.ndarray, max_k: int = 12) -> int:
+        """
+        Encuentra el número óptimo de clusters para hierarchical usando Silhouette score
+        
+        Args:
+            coords_scaled: Coordenadas normalizadas
+            max_k: Número máximo de clusters a probar
+            
+        Returns:
+            Número óptimo de clusters
+        """
+        logger.info("Determinando número óptimo de clusters jerárquicos...")
+        
+        if len(coords_scaled) < 4:
+            return min(2, len(coords_scaled))
+        
+        # Limitar max_k al número de puntos disponibles y a un máximo razonable
+        max_k = min(max_k, len(coords_scaled) - 1, 12)
+        
+        # Probar diferentes linkages y quedarse con el mejor
+        best_linkage = 'ward'
+        best_score_overall = -1
+        best_k_overall = 2
+        
+        for linkage_method in ['ward', 'complete', 'average']:
+            silhouette_scores = []
+            k_range = range(2, max_k + 1)
+            
+            for k in k_range:
+                hierarchical = AgglomerativeClustering(n_clusters=k, linkage=linkage_method)
+                labels = hierarchical.fit_predict(coords_scaled)
+                score = silhouette_score(coords_scaled, labels)
+                silhouette_scores.append(score)
+            
+            # Encontrar mejor k para este linkage
+            if silhouette_scores:
+                max_score = max(silhouette_scores)
+                if max_score > best_score_overall:
+                    best_score_overall = max_score
+                    best_k_overall = list(k_range)[silhouette_scores.index(max_score)]
+                    best_linkage = linkage_method
+        
+        logger.info(f"Mejor linkage: {best_linkage}")
+        
+        logger.info(f"Número óptimo de clusters jerárquicos: {best_k_overall} (Silhouette: {best_score_overall:.3f})")
+        
+        # Guardar el mejor linkage para usar en la ejecución final
+        self.best_hierarchical_linkage = best_linkage
+        return best_k_overall
 
     def geographic_clustering(self, df: pd.DataFrame, n_clusters: Optional[int] = None) -> Dict:
         """
@@ -194,6 +244,12 @@ class ClusteringProcessor:
             cluster_id = int(row['cluster_geografico'])
             poi_clusters[poi_id] = cluster_id
         
+        # Crear diccionario de centroides para cálculo de cluster de origen
+        cluster_centers = {}
+        for stats in cluster_stats:
+            cluster_id = stats['cluster_id']
+            cluster_centers[cluster_id] = [stats['centroide_lat'], stats['centroide_lng']]
+        
         results = {
             'status': 'success',
             'algorithm': 'kmeans',
@@ -201,6 +257,7 @@ class ClusteringProcessor:
             'silhouette_score': float(silhouette),
             'total_pois': len(df),
             'cluster_stats': cluster_stats,
+            'cluster_centers': cluster_centers,  # ← NUEVO: centroides para diversidad geográfica
             'poi_clusters': poi_clusters,  # ← AGREGADO: mapeo para recomendaciones
             'dataframe': df_clustered
         }
@@ -292,31 +349,41 @@ class ClusteringProcessor:
         logger.info(f"DBSCAN completado. Clusters: {n_clusters}, Ruido: {n_noise}")
         return results
     
-    def hierarchical_clustering(self, df: pd.DataFrame, n_clusters: int = 6) -> Dict:
+    def hierarchical_clustering(self, df: pd.DataFrame, n_clusters: Optional[int] = None) -> Dict:
         """
-        Clustering jerárquico aglomerativo
+        Clustering jerárquico aglomerativo con detección automática del número óptimo
         
         Args:
             df: DataFrame con POIs
-            n_clusters: Número de clusters objetivo
+            n_clusters: Número específico de clusters (opcional, se auto-detecta si es None)
             
         Returns:
             Dict con resultados del clustering jerárquico
         """
-        logger.info(f"Ejecutando clustering jerárquico con {n_clusters} clusters...")
-        
         if df.empty:
             return {'status': 'no_data', 'clusters': 0}
         
         # Preparar datos geográficos
         coords = df[['latitud', 'longitud']].astype(float).values
         
-        # Normalizar coordenadas
-        scaler = StandardScaler()
+        # Normalizar coordenadas usando MinMaxScaler (mejor para datos geográficos)
+        scaler = MinMaxScaler()
         coords_scaled = scaler.fit_transform(coords)
         
-        # Clustering jerárquico
-        hierarchical = AgglomerativeClustering(n_clusters=n_clusters, linkage='ward')
+        # Ponderar latitud para hierarchical (Buenos Aires es más vertical)
+        # Esto mejora la separación norte-sur en clustering jerárquico
+        coords_scaled[:, 0] *= 1.5  # Latitud (eje vertical) x1.5
+        
+        # Determinar número óptimo de clusters si no se especifica
+        if n_clusters is None:
+            n_clusters = self._find_optimal_hierarchical_clusters(coords_scaled)
+        
+        # Usar el mejor linkage encontrado, o 'ward' por defecto
+        best_linkage = getattr(self, 'best_hierarchical_linkage', 'ward')
+        logger.info(f"Ejecutando clustering jerárquico con {n_clusters} clusters (linkage={best_linkage})...")
+        
+        # Clustering jerárquico con mejor linkage
+        hierarchical = AgglomerativeClustering(n_clusters=n_clusters, linkage=best_linkage)
         cluster_labels = hierarchical.fit_predict(coords_scaled)
         
         # Calcular métricas
@@ -349,6 +416,9 @@ class ClusteringProcessor:
             cluster_id = int(row['cluster_hierarchical'])
             poi_clusters[poi_id] = cluster_id
         
+        # Crear relaciones entre categorías basadas en clusters jerárquicos
+        category_relationships = self._calculate_category_relationships(df_clustered)
+        
         results = {
             'status': 'success',
             'algorithm': 'hierarchical',
@@ -356,6 +426,7 @@ class ClusteringProcessor:
             'silhouette_score': float(silhouette),
             'cluster_stats': cluster_stats,
             'poi_clusters': poi_clusters,  # ← AGREGADO: mapeo para recomendaciones
+            'category_relationships': category_relationships,  # ← AGREGADO: relaciones entre categorías
             'dataframe': df_clustered
         }
         
@@ -718,6 +789,46 @@ class ClusteringProcessor:
         else:
             return obj
 
+    def _calculate_category_relationships(self, df_clustered: pd.DataFrame) -> Dict:
+        """
+        Calcular relaciones entre categorías basándose en co-ocurrencia en clusters
+        
+        Args:
+            df_clustered: DataFrame con columna cluster_hierarchical y categoria
+            
+        Returns:
+            Dict con relaciones: {categoria: {categoria_relacionada: score}}
+        """
+        relationships = {}
+        
+        # Obtener categorías únicas
+        categorias = df_clustered['categoria'].unique()
+        
+        for cat in categorias:
+            relationships[cat] = {}
+            
+            # Encontrar en qué clusters aparece esta categoría
+            pois_cat = df_clustered[df_clustered['categoria'] == cat]
+            clusters_cat = pois_cat['cluster_hierarchical'].value_counts()
+            
+            # Para cada cluster donde aparece esta categoría
+            for cluster_id in clusters_cat.index:
+                # Encontrar otras categorías en el mismo cluster
+                pois_en_cluster = df_clustered[df_clustered['cluster_hierarchical'] == cluster_id]
+                otras_categorias = pois_en_cluster[pois_en_cluster['categoria'] != cat]['categoria'].value_counts()
+                
+                # Calcular score de relación basado en co-ocurrencia
+                for otra_cat, count in otras_categorias.items():
+                    if otra_cat not in relationships[cat]:
+                        relationships[cat][otra_cat] = 0.0
+                    
+                    # Score basado en proporción de POIs compartidos en el cluster
+                    total_en_cluster = len(pois_en_cluster)
+                    score = count / total_en_cluster if total_en_cluster > 0 else 0.0
+                    relationships[cat][otra_cat] = max(relationships[cat][otra_cat], score)
+        
+        return relationships
+    
     # Métodos auxiliares
     def _calculate_cluster_radius(self, cluster_data: pd.DataFrame) -> float:
         """Calcular radio del cluster en km"""
