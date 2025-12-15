@@ -632,12 +632,26 @@ class ItineraryController {
           const actividad = actividades[i];
           
           // Determinar tipo de actividad y validar datos
+          // IMPORTANTE: Verificar tipo_actividad primero para distinguir correctamente POIs de Eventos
           let tipoActividad, poiId, eventoId;
-          if (actividad.poi_id) {
+          
+          if (actividad.tipo_actividad === 'evento') {
+            // Es un evento - usar evento_id y dejar poi_id en null
+            tipoActividad = 'evento';
+            poiId = null;
+            eventoId = actividad.evento_id;
+          } else if (actividad.tipo_actividad === 'poi') {
+            // Es un POI - usar poi_id y dejar evento_id en null
             tipoActividad = 'poi';
             poiId = actividad.poi_id;
             eventoId = null;
-          } else if (actividad.evento_id) {
+          } else if (actividad.poi_id && !actividad.evento_id) {
+            // Fallback: solo tiene poi_id
+            tipoActividad = 'poi';
+            poiId = actividad.poi_id;
+            eventoId = null;
+          } else if (actividad.evento_id && !actividad.poi_id) {
+            // Fallback: solo tiene evento_id
             tipoActividad = 'evento';
             poiId = null;
             eventoId = actividad.evento_id;

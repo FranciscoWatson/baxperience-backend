@@ -952,7 +952,8 @@ class RecommendationService:
                     evento['fecha_fin'] = evento['fecha_fin'].isoformat()
                 
                 # Agregar campos faltantes para compatibilidad
-                evento['poi_id'] = evento['evento_id']
+                # NO asignar poi_id para eventos - debe permanecer None para distinguirlos
+                evento['poi_id'] = None
                 evento['comuna'] = None
                 evento['valoracion_promedio'] = 0.0
                 evento['popularidad_score'] = 0.8
